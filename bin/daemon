@@ -103,12 +103,15 @@ function watch_and_process() {
       echo "[$(date)] Filtering by projects: $JIRA_PROJECTS"
     fi
 
-    local tickets
-    tickets=$(curl -s -X POST -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+    local payload response err tickets
+    payload=$(jq -n --arg jql "$jql" '{jql: $jql, fields: ["key"], maxResults: 10}')
+    response=$(curl -s -X POST -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
       -H 'Content-Type: application/json' \
       "https://api.atlassian.com/ex/jira/$JIRA_CLOUD_ID/rest/api/3/search/jql" \
-      -d "{\"jql\":\"$jql\",\"fields\":[\"key\"],\"maxResults\":10}" \
-      | jq -r '.issues[]?.key // empty')
+      -d "$payload")
+    err=$(echo "$response" | jq -r '.errorMessages[]? // empty' 2>/dev/null)
+    [ -n "$err" ] && echo "[$(date)] Jira search error: $err"
+    tickets=$(echo "$response" | jq -r '.issues[]?.key // empty' 2>/dev/null)
 
     if [ -n "$tickets" ]; then
       echo "[$(date)] Found tickets: $tickets"
