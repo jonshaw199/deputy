@@ -4,7 +4,7 @@
 // hit the exact same endpoints. It reads daemon state from /tmp (read-only) and
 // shells out to bin/daemon for start/stop.
 import { createServer } from 'node:http';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, appendFileSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
@@ -98,6 +98,14 @@ const server = createServer(async (req, res) => {
     const { repo } = await readBody(req);
     if (!REPOS.includes(repo)) return json(res, 400, { error: 'repo not in DEPUTY_REPOS allowlist' });
     return json(res, 200, await runDaemon(repo, 'start'));
+  }
+  if (path === '/api/continue' && req.method === 'POST') {
+    const { project, ticket, prompt } = await readBody(req);
+    if (!listDaemons().some((d) => d.project === project)) return json(res, 400, { error: 'unknown daemon' });
+    if (!ticket || !prompt) return json(res, 400, { error: 'ticket and prompt required' });
+    const line = JSON.stringify({ ticket, prompt, id: `web-${ticket}-${Date.now()}` });
+    appendFileSync(join(TMP, `deputy-queue-${project}.jsonl`), line + '\n');
+    return json(res, 200, { ok: true });
   }
 
   // Static

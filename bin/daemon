@@ -25,6 +25,12 @@ source "$PROJECT_ROOT/config.sh"
 AGENT_CMD="${DEPUTY_AGENT_CMD:-node \"$RUNNER_PATH\"}"
 WORKTREE_SETUP="${DEPUTY_WORKTREE_SETUP:-}"
 SYMLINK_FILES="${DEPUTY_SYMLINK_FILES:-.env .env.local}"
+# Command eval'd right before the agent runs (e.g. refresh cloud creds); may be empty.
+PRE_AGENT="${DEPUTY_PRE_AGENT:-}"
+# Label put on deputy's PRs; also how CI auto-fix finds which PRs to watch.
+PR_LABEL="${DEPUTY_PR_LABEL:-ai-automated}"
+# Whether CI auto-fix posts a "picking this up" comment on the PR (default: quiet).
+CI_ANNOUNCE="${DEPUTY_CI_ANNOUNCE:-false}"
 
 # The daemon operates on the repo it is launched from.
 MAIN_PROJECT_DIR="$(pwd)"
@@ -34,6 +40,8 @@ AUTOMATION_BASE_DIR="${MAIN_PROJECT_DIR}_deputy"
 DAEMON_PID_FILE="/tmp/deputy-${PROJECT_NAME}.pid"
 DAEMON_LOG_FILE="/tmp/deputy-${PROJECT_NAME}.log"
 DAEMON_META_FILE="/tmp/deputy-${PROJECT_NAME}.meta"
+PROCESSED_FILE="/tmp/deputy-processed-${PROJECT_NAME}.txt"   # CI failures already handled (pr:sha)
+QUEUE_FILE="/tmp/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
 function preflight_tracker() {
@@ -121,6 +129,10 @@ function watch_and_process() {
       echo "[$(date)] No tickets found"
     fi
 
+    # Fix red CI on deputy's own PRs, and run any local "do X next" requests.
+    check_for_ci_failures
+    drain_continue_queue
+
     sleep "$CHECK_INTERVAL"
   done
 }
@@ -150,6 +162,183 @@ function setup_worktree() {
     rm -rf "$worktree/node_modules/$dep"
     ln -sf "$AUTOMATION_BASE_DIR/node_modules/$dep" "$worktree/node_modules/$dep" 2>> "$log_file" || true
   done
+}
+
+function run_agent() {
+  # run_agent <worktree> <prompt> <log_file> ; returns the agent's exit code
+  local worktree=$1 agent_prompt=$2 lf=$3
+  [ -n "$PRE_AGENT" ] && eval "$PRE_AGENT" >> "$lf" 2>&1
+  ( cd "$worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$agent_prompt" \
+      timeout "$CLAUDE_TIMEOUT_SECONDS" bash -c "$AGENT_CMD" >> "$lf" 2>&1 )
+}
+
+# continue_ticket <ticket_id> <prompt> <cont_id>
+# Re-enters an existing PR's branch to do follow-up work (CI fix or a local request).
+function continue_ticket() {
+  local ticket_id=$1 continuation_prompt=$2 cont_id=$3
+  local log_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.log"
+  local lock_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.lock"
+  local branch_name; branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]')
+  local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}_cont_${cont_id}"
+
+  if [ -f "$lock_file" ]; then
+    local pid; pid=$(cat "$lock_file" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "[$(date)] Continuation $cont_id for $ticket_id already running (PID $pid)" >> "$DAEMON_LOG_FILE"; return 0
+    fi
+    rm -f "$lock_file"
+  fi
+  echo $$ > "$lock_file"
+  trap "rm -f '$lock_file'" EXIT
+
+  echo "[$(date)] Continuation for $ticket_id (cont $cont_id)" > "$log_file"
+  echo "[$(date)] Request: $continuation_prompt" >> "$log_file"
+  cd "$MAIN_PROJECT_DIR" || { rm -f "$lock_file"; return 1; }
+
+  # Reuse the branch's worktree if it's already checked out, else create one on the branch.
+  local existing_worktree
+  existing_worktree=$(git worktree list --porcelain | awk -v b="refs/heads/$branch_name" '/^worktree /{wt=substr($0,10)} $0=="branch " b{print wt}' | grep -v "^$MAIN_PROJECT_DIR$" | head -1)
+  if [ -n "$existing_worktree" ]; then
+    ticket_worktree="$existing_worktree"
+    echo "[$(date)] Reusing worktree $ticket_worktree" >> "$log_file"
+  else
+    git worktree remove --force "$ticket_worktree" 2>/dev/null || true
+    rm -rf "$ticket_worktree" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    git fetch origin "$branch_name" >> "$log_file" 2>&1 || true
+    if ! git worktree add "$ticket_worktree" "$branch_name" >> "$log_file" 2>&1; then
+      echo "[$(date)] FAILED continuation: $ticket_id (checkout $branch_name failed)" >> "$DAEMON_LOG_FILE"
+      rm -f "$lock_file"; return 1
+    fi
+  fi
+
+  setup_worktree "$ticket_worktree" "$log_file"
+
+  local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
+  local prompt="Continue work on item $ticket_id.
+
+**Request:**
+$continuation_prompt
+${item_url:+
+**Work item:** $item_url}
+
+**Context:**
+- You are in an isolated worktree at $ticket_worktree, on branch $branch_name (already checked out).
+- A PR already exists for this branch; commits you push appear on it automatically.
+- Read the item with \`mcp__tracker__get_item\` (itemId: $ticket_id) if you need its details.
+
+**Constraints:**
+- Stay in the current directory (pwd). Do NOT create a new branch. Do NOT use the Agent/Task tool.
+
+**Tasks:**
+1. Address the request above.
+2. If you changed code, run the relevant tests (max 3 runs); skip pre-existing unrelated failures.
+3. Commit with a descriptive message and push to origin/$branch_name.
+
+Work autonomously. Report what you did."
+
+  echo "[$(date)] Starting continuation agent for $ticket_id..." >> "$log_file"
+  run_agent "$ticket_worktree" "$prompt" "$log_file"
+  local exit_code=$?
+  if [ $exit_code -eq 0 ]; then
+    echo "[$(date)] SUCCESS continuation: $ticket_id (cont $cont_id)" >> "$DAEMON_LOG_FILE"
+  else
+    echo "[$(date)] FAILED continuation: $ticket_id (cont $cont_id, exit $exit_code)" >> "$DAEMON_LOG_FILE"
+  fi
+
+  # Only remove the worktree if we created it (don't nuke one the user is in).
+  if [ -z "$existing_worktree" ]; then
+    cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
+    git worktree prune 2>/dev/null || true
+  fi
+  rm -f "$lock_file"
+}
+
+# Watches deputy's own open PRs (by label) for red CI and auto-triggers a fix. Forge = GitHub.
+function check_for_ci_failures() {
+  command -v gh >/dev/null 2>&1 || return 0
+  local pr_list
+  pr_list=$(cd "$MAIN_PROJECT_DIR" && gh pr list --state open --label "$PR_LABEL" --json number,headRefName,headRefOid 2>/dev/null) || return 0
+  local rows
+  rows=$(echo "$pr_list" | jq -r '.[] | [(.number|tostring), .headRefName, .headRefOid] | @tsv' 2>/dev/null)
+  [ -z "$rows" ] && return 0
+
+  while IFS=$'\t' read -r pr_number branch_name commit_sha; do
+    [ -z "$pr_number" ] && continue
+    local key="ci:${pr_number}:${commit_sha}"
+    grep -qF "$key" "$PROCESSED_FILE" 2>/dev/null && continue
+
+    local checks
+    checks=$(cd "$MAIN_PROJECT_DIR" && gh pr checks "$pr_number" --json name,state,link 2>/dev/null) || continue
+    local pending; pending=$(echo "$checks" | jq '[.[]|select(.state=="PENDING" or .state=="IN_PROGRESS")]|length' 2>/dev/null || echo 0)
+    [ "$pending" -gt 0 ] && continue
+    local failed; failed=$(echo "$checks" | jq '[.[]|select(.state=="FAIL" or .state=="FAILURE")]|length' 2>/dev/null || echo 0)
+    [ "$failed" -eq 0 ] && continue
+
+    echo "$key" >> "$PROCESSED_FILE"
+    local ticket_id; ticket_id=$(echo "$branch_name" | sed 's|.*/||' | tr '[:lower:]' '[:upper:]')
+    echo "[$(date)] CI auto-fix: PR #$pr_number ($ticket_id) has $failed failed checks at ${commit_sha:0:8}" >> "$DAEMON_LOG_FILE"
+
+    local summary; summary=$(echo "$checks" | jq -r '.[]|select(.state=="FAIL" or .state=="FAILURE")|"- \(.name): \(.link // "")"')
+    local repo; repo=$(cd "$MAIN_PROJECT_DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
+    local annotations=""
+    while IFS= read -r link; do
+      local run_id; run_id=$(echo "$link" | grep -o '[0-9]*$'); [ -z "$run_id" ] && continue
+      local a; a=$(cd "$MAIN_PROJECT_DIR" && gh api "repos/$repo/check-runs/$run_id/annotations" --jq '.[]|"  [\(.path):\(.start_line)] \(.message|split("\n")[0])"' 2>/dev/null | head -20)
+      [ -n "$a" ] && annotations="${annotations}
+Run $run_id:
+$a"
+    done < <(echo "$checks" | jq -r '.[]|select(.state=="FAIL" or .state=="FAILURE")|.link // empty')
+
+    [ "$CI_ANNOUNCE" = "true" ] && (cd "$MAIN_PROJECT_DIR" && gh pr comment "$pr_number" --body "🤖 CI failed on \`${commit_sha:0:8}\` — picking it up." >> "$DAEMON_LOG_FILE" 2>&1)
+
+    local prompt="CI checks are failing on PR #$pr_number (branch $branch_name).
+
+Failed checks:
+$summary
+${annotations:+
+Annotations (file:line + message):
+$annotations}
+
+Triage each failing check before changing anything:
+1. Run \`git diff origin/main...HEAD --name-only\` to see what this branch changed.
+2. Classify each failure as related (introduced by this branch) or unrelated (flaky/infra/pre-existing on main).
+3. Fix only the related failures (reproduce locally, fix root cause in code not tests, push).
+4. If all failures are unrelated, do nothing and say so."
+
+    continue_ticket "$ticket_id" "$prompt" "ci-${commit_sha:0:8}" &
+  done <<< "$rows"
+}
+
+# Drains local "do X next" requests (CLI or dashboard) into the continue engine.
+function drain_continue_queue() {
+  [ -s "$QUEUE_FILE" ] || return 0
+  local tmp; tmp=$(mktemp)
+  mv "$QUEUE_FILE" "$tmp"
+  local line
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    local ticket prompt cid
+    ticket=$(echo "$line" | jq -r '.ticket // empty' 2>/dev/null)
+    prompt=$(echo "$line" | jq -r '.prompt // empty' 2>/dev/null)
+    cid=$(echo "$line" | jq -r '.id // empty' 2>/dev/null)
+    { [ -z "$ticket" ] || [ -z "$prompt" ]; } && continue
+    [ -z "$cid" ] && cid="q$(echo "$line" | cksum | cut -d' ' -f1)"
+    echo "[$(date)] Local continuation request for $ticket (cont $cid)" >> "$DAEMON_LOG_FILE"
+    continue_ticket "$ticket" "$prompt" "$cid" &
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
+# Appends a local "do X next" request to this project's queue (drained by the running daemon).
+function enqueue_continue() {
+  local ticket=$1 prompt=$2
+  if [ -z "$ticket" ] || [ -z "$prompt" ]; then
+    echo "Usage: deputy continue <TICKET> \"<what to do>\""; exit 1
+  fi
+  jq -nc --arg t "$ticket" --arg p "$prompt" --arg id "cli-$(date +%s)-$$" \
+    '{ticket:$t, prompt:$p, id:$id}' >> "$QUEUE_FILE"
+  echo "Queued continuation for $ticket (the running daemon will pick it up)."
 }
 
 function process_ticket() {
@@ -216,8 +405,8 @@ ${item_url:+**Work item:** $item_url}
 6. Commit with an appropriate conventional commit type (feat/fix/refactor/etc): <type>: <summary> [$ticket_id]
 7. Create branch from current commit: git branch $branch_name
 8. Push branch to origin: git push origin $branch_name
-9. Create a draft PR with gh CLI:
-   - Title: \"<type>: <summary> [$ticket_id]\" (same type as the commit)${pr_ref:+
+9. Create a draft PR with gh CLI, labelled so deputy can watch its CI:
+   - \`gh pr create --draft --label \"$PR_LABEL\" --title \"<type>: <summary> [$ticket_id]\" ...\`${pr_ref:+
    - Body should include: \"$pr_ref\"}
 10. Mark the work item done with \`mcp__tracker__finish\` (itemId: $ticket_id)
 
@@ -225,7 +414,7 @@ Work autonomously. When done, report the PR URL."
 
   local timeout_mins=$((CLAUDE_TIMEOUT_SECONDS / 60))
   echo "[$(date)] Starting agent (max ${timeout_mins} min)..." >> "$log_file"
-  cd "$ticket_worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$prompt" timeout "$CLAUDE_TIMEOUT_SECONDS" bash -c "$AGENT_CMD" >> "$log_file" 2>&1
+  run_agent "$ticket_worktree" "$prompt" "$log_file"
   local exit_code=$?
 
   if [ $exit_code -eq 124 ]; then
@@ -243,9 +432,10 @@ Work autonomously. When done, report the PR URL."
 }
 
 case "$1" in
-  start)  start_daemon ;;
-  stop)   stop_daemon ;;
-  status) status_daemon ;;
-  __run)  watch_and_process ;;  # internal: the backgrounded poll loop
-  *) echo "Usage: $0 {start|stop|status}"; exit 1 ;;
+  start)    start_daemon ;;
+  stop)     stop_daemon ;;
+  status)   status_daemon ;;
+  continue) enqueue_continue "$2" "$3" ;;  # deputy continue <TICKET> "<what to do>"
+  __run)    watch_and_process ;;           # internal: the backgrounded poll loop
+  *) echo "Usage: $0 {start|stop|status|continue <TICKET> \"<prompt>\"}"; exit 1 ;;
 esac

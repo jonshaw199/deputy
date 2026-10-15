@@ -49,6 +49,20 @@ function renderDaemons(daemons) {
       card.append(recent);
     }
     const footer = el('div', 'recent'); footer.append(viewLog); card.append(footer);
+
+    if (d.running) {
+      const form = el('form', 'tell');
+      form.innerHTML = `<input name="ticket" placeholder="TICKET" /><input name="prompt" placeholder="tell deputy to…" /><button type="submit">Send</button>`;
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const ticket = form.ticket.value.trim(), prompt = form.prompt.value.trim();
+        if (!ticket || !prompt) return;
+        const btn = form.querySelector('button'); btn.disabled = true;
+        await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project, ticket, prompt }) });
+        form.reset(); btn.disabled = false;
+      };
+      card.append(form);
+    }
     wrap.append(card);
   }
 }

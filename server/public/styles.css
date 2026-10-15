@@ -45,6 +45,9 @@ button, select {
 button:hover { border-color: var(--accent); }
 .start { display: flex; gap: 8px; }
 .linklike { background: none; border: none; color: var(--accent); padding: 0; cursor: pointer; font-size: 12px; }
+.tell { display: flex; gap: 6px; margin-top: 10px; }
+.tell input { flex: 1; min-width: 0; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font-size: 12px; }
+.tell input[name="ticket"] { flex: 0 0 90px; }
 
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; }
 .modal.hidden { display: none; }
