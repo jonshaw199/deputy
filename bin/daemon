@@ -1,14 +1,18 @@
 #!/bin/bash
-# Watches Jira for ready, AI-labelled tickets and resolves each one autonomously
-# with the Claude Agent SDK: isolated git worktree -> implement -> push -> draft PR
-# -> move the ticket forward. All config comes from .env (see .env.example).
+# Deputy: watches a tracker (Jira / GitHub Issues) for ready, AI-labelled work items
+# and resolves each autonomously: isolated git worktree -> implement -> push -> draft
+# PR -> mark done. Also auto-fixes red CI on its own PRs and takes local follow-up
+# requests. All config comes from .env (see .env.example).
 #
 # Usage (run from the repo you want the daemon to work on):
-#   /path/to/jira-daemon/bin/daemon start|stop|status
+#   /path/to/deputy/bin/daemon start | stop | restart | status
+#   /path/to/deputy/bin/daemon continue <TICKET> "<what to do next>"
+#   /path/to/deputy/bin/daemon stop-ticket <TICKET>
 #
 # Logs:
-#   tail -f /tmp/deputy-<repo>.log   # poller
-#   tail -f /tmp/deputy-item-<TICKET>.log        # per-ticket (streaming)
+#   tail -f /tmp/deputy-<repo>.log                     # poller + outcomes
+#   tail -f /tmp/deputy-item-<TICKET>.log              # per-ticket (streaming)
+#   tail -f /tmp/deputy-item-<TICKET>-cont-<id>.log    # continuation (streaming)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -43,6 +47,14 @@ DAEMON_META_FILE="/tmp/deputy-${PROJECT_NAME}.meta"
 PROCESSED_FILE="/tmp/deputy-processed-${PROJECT_NAME}.txt"   # CI failures already handled (pr:sha)
 QUEUE_FILE="/tmp/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
+
+function kill_tree() {
+  # Recursively kill a process and all its descendants (portable; no process groups).
+  local p=$1
+  local c
+  for c in $(pgrep -P "$p" 2>/dev/null); do kill_tree "$c"; done
+  kill -9 "$p" 2>/dev/null || true
+}
 
 function preflight_tracker() {
   # Validates the configured tracker + credentials by doing one real poll.
@@ -91,10 +103,8 @@ function stop_daemon() {
     exit 1
   fi
   local pid; pid="$(cat "$DAEMON_PID_FILE")"
-  echo "Stopping daemon and child processes..."
-  pkill -P "$pid" 2>/dev/null || true
-  ps aux | grep "claude-agent-runner.mjs" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
-  kill -9 "$pid" 2>/dev/null || true
+  echo "Stopping daemon and in-flight agents..."
+  kill_tree "$pid"
   rm -f "$DAEMON_PID_FILE" "$DAEMON_META_FILE"
   echo "Daemon stopped"
 }
@@ -431,11 +441,40 @@ Work autonomously. When done, report the PR URL."
   rm -f "$lock_file"
 }
 
+function stop_ticket() {
+  local ticket_id=$1
+  [ -z "$ticket_id" ] && { echo "Usage: deputy stop-ticket <TICKET>"; exit 1; }
+  local killed=0 lf pid wt
+
+  # Kill the job (and any continuations) via their lock PIDs + whole process subtree.
+  for lf in "/tmp/deputy-item-${ticket_id}.lock" /tmp/deputy-item-${ticket_id}-cont-*.lock; do
+    [ -f "$lf" ] || continue
+    pid=$(cat "$lf" 2>/dev/null)
+    [ -n "$pid" ] && { kill_tree "$pid"; killed=1; }
+    rm -f "$lf"
+  done
+
+  # Remove this ticket's worktree(s).
+  cd "$MAIN_PROJECT_DIR" 2>/dev/null || true
+  for wt in "${AUTOMATION_BASE_DIR}_${ticket_id}" "${AUTOMATION_BASE_DIR}_${ticket_id}"_cont_*; do
+    [ -d "$wt" ] || continue
+    git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+    killed=1
+  done
+  git worktree prune 2>/dev/null || true
+
+  [ $killed -eq 1 ] && echo "Stopped $ticket_id." || echo "$ticket_id does not appear to be running."
+  local url; url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
+  [ -n "$url" ] && echo "Note: it was moved to the in-progress state when picked up; move it back if you don't want it reprocessed: $url"
+}
+
 case "$1" in
-  start)    start_daemon ;;
-  stop)     stop_daemon ;;
-  status)   status_daemon ;;
-  continue) enqueue_continue "$2" "$3" ;;  # deputy continue <TICKET> "<what to do>"
-  __run)    watch_and_process ;;           # internal: the backgrounded poll loop
-  *) echo "Usage: $0 {start|stop|status|continue <TICKET> \"<prompt>\"}"; exit 1 ;;
+  start)       start_daemon ;;
+  stop)        stop_daemon ;;
+  restart)     [ -f "$DAEMON_PID_FILE" ] && stop_daemon; sleep 1; start_daemon ;;
+  status)      status_daemon ;;
+  continue)    enqueue_continue "$2" "$3" ;;   # deputy continue <TICKET> "<what to do>"
+  stop-ticket) stop_ticket "$2" ;;             # cancel one in-flight ticket
+  __run)       watch_and_process ;;            # internal: the backgrounded poll loop
+  *) echo "Usage: $0 {start|stop|restart|status|continue <TICKET> \"<prompt>\"|stop-ticket <TICKET>}"; exit 1 ;;
 esac
