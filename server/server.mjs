@@ -35,6 +35,7 @@ const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { re
 const tail = (path, n = 4000) => { try { const t = readFileSync(path, 'utf8'); return t.length > n ? t.slice(-n) : t; } catch { return ''; } };
 const lastMeaningful = (text) => { const lines = text.split('\n').map((l) => l.trim()).filter(Boolean); return lines[lines.length - 1] || ''; };
 const prUrlIn = (text) => { const m = text.match(/https:\/\/github\.com\/[^\s"']+\/pull\/\d+/g); return m ? m[m.length - 1] : null; };
+const itemUrlIn = (text) => { const m = text.match(/ITEM_URL: (\S+)/g); return m ? m[m.length - 1].replace('ITEM_URL: ', '') : null; };
 
 function listDaemons() {
   return readdirSync(TMP)
@@ -54,12 +55,12 @@ function listDaemons() {
 
 function listActive() {
   return readdirSync(TMP)
-    .map((f) => f.match(/^jira-automation-([A-Za-z]+-\d+)\.lock$/))
-    .filter(Boolean)
+    .map((f) => f.match(/^jira-automation-(.+)\.lock$/))
+    .filter((m) => m && !m[1].startsWith('daemon-'))
     .map((m) => {
       const ticket = m[1];
       const log = tail(join(TMP, `jira-automation-${ticket}.log`));
-      return { ticket, phase: lastMeaningful(log), pr: prUrlIn(log), jira: SITE_URL ? `${SITE_URL}/browse/${ticket}` : null };
+      return { ticket, phase: lastMeaningful(log), pr: prUrlIn(log), item: itemUrlIn(log) };
     });
 }
 

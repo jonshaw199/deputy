@@ -59,9 +59,9 @@ function renderActive(active) {
   if (!active.length) { wrap.append(el('div', 'muted', 'Nothing in progress.')); return; }
   for (const a of active) {
     const card = el('div', 'card');
-    const jira = a.jira ? ` · <a href="${a.jira}" target="_blank">Jira</a>` : '';
+    const item = a.item ? ` · <a href="${a.item}" target="_blank">ticket</a>` : '';
     const pr = a.pr ? ` · <a href="${a.pr}" target="_blank">PR</a>` : '';
-    card.append(el('div', null, `<h3><span class="dot busy"></span> ${esc(a.ticket)}</h3><div class="sub">${esc(a.phase).slice(0, 160)}</div><div class="sub">${jira}${pr}</div>`));
+    card.append(el('div', null, `<h3><span class="dot busy"></span> ${esc(a.ticket)}</h3><div class="sub">${esc(a.phase).slice(0, 160)}</div><div class="sub">${item}${pr}</div>`));
     const log = el('button', 'linklike', 'live log');
     log.onclick = () => openLog({ ticket: a.ticket }, a.ticket);
     const footer = el('div', 'recent'); footer.append(log); card.append(footer);

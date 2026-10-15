@@ -8,6 +8,18 @@ a draft PR, and moves the ticket forward. Ships with a web dashboard.
 Nothing here is tied to a specific company. Point it at any Jira Cloud site and any
 GitHub repo via `.env`.
 
+## Trackers (where work items come from)
+
+The work source is pluggable. Pick one with `JIRA_AUTOMATION_TRACKER`:
+
+- `jira` — polls by JQL (label + status); marks progress by moving the ticket's status.
+- `github` — polls open GitHub issues by label; marks progress by swapping labels.
+
+Each tracker is one small module in `lib/trackers/` implementing six methods
+(`listReady`, `getItem`, `markStarted`, `markDone`, `itemUrl`, `prRef`). To add
+Linear or anything else, drop in a module and register it in `lib/trackers/index.mjs`.
+The daemon, the agent, and the dashboard are all tracker-agnostic.
+
 ## Setup
 
 ```bash

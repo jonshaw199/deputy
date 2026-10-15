@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_BIN="$SCRIPT_DIR/daemon"
 RUNNER_PATH="$PROJECT_ROOT/lib/claude-agent-runner.mjs"
+TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -27,14 +28,13 @@ DAEMON_LOG_FILE="/tmp/jira-automation-daemon-${PROJECT_NAME}.log"
 DAEMON_META_FILE="/tmp/jira-automation-daemon-${PROJECT_NAME}.meta"
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
-function require_config() {
-  local missing=()
-  [ -n "$JIRA_USER_EMAIL" ] || missing+=("JIRA_AUTOMATION_USER_EMAIL")
-  [ -n "$JIRA_API_TOKEN" ]  || missing+=("JIRA_AUTOMATION_API_TOKEN")
-  [ -n "$JIRA_CLOUD_ID" ]   || missing+=("JIRA_AUTOMATION_CLOUD_ID")
-  if [ ${#missing[@]} -gt 0 ]; then
-    echo "Missing required config: ${missing[*]}"
-    echo "Set them in $PROJECT_ROOT/.env (see .env.example)."
+function preflight_tracker() {
+  # Validates the configured tracker + credentials by doing one real poll.
+  local out
+  if ! out=$(node "$TRACKER_CLI" list-ready 2>&1); then
+    echo "Tracker preflight failed:"
+    echo "$out"
+    echo "Check your .env (see .env.example)."
     exit 1
   fi
 }
@@ -57,11 +57,11 @@ function start_daemon() {
     echo "Daemon already running (PID: $(cat "$DAEMON_PID_FILE"))"
     exit 1
   fi
-  require_config
+  preflight_tracker
   ensure_deps
 
   echo "$MAIN_PROJECT_DIR" > "$DAEMON_META_FILE"
-  echo "Starting Jira daemon for $PROJECT_NAME..."
+  echo "Starting daemon for $PROJECT_NAME (tracker: $(node "$TRACKER_CLI" name 2>/dev/null))..."
   nohup env -u CLAUDECODE "$DAEMON_BIN" __run > "$DAEMON_LOG_FILE" 2>&1 &
   echo $! > "$DAEMON_PID_FILE"
   echo "Daemon started (PID: $(cat "$DAEMON_PID_FILE"))"
@@ -95,23 +95,13 @@ function status_daemon() {
 
 function watch_and_process() {
   while true; do
-    echo "[$(date)] Checking for '$JIRA_LABEL' tickets in status '$JIRA_STATUS_READY'..."
+    echo "[$(date)] Checking for ready work items..."
 
-    local jql="labels = \"$JIRA_LABEL\" AND status = \"$JIRA_STATUS_READY\""
-    if [ -n "$JIRA_PROJECTS" ]; then
-      jql="$jql AND project IN ($JIRA_PROJECTS)"
-      echo "[$(date)] Filtering by projects: $JIRA_PROJECTS"
+    local tickets
+    if ! tickets=$(node "$TRACKER_CLI" list-ready 2>>"$DAEMON_LOG_FILE"); then
+      echo "[$(date)] tracker list-ready failed (see error above)"
+      tickets=""
     fi
-
-    local payload response err tickets
-    payload=$(jq -n --arg jql "$jql" '{jql: $jql, fields: ["key"], maxResults: 10}')
-    response=$(curl -s -X POST -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
-      -H 'Content-Type: application/json' \
-      "https://api.atlassian.com/ex/jira/$JIRA_CLOUD_ID/rest/api/3/search/jql" \
-      -d "$payload")
-    err=$(echo "$response" | jq -r '.errorMessages[]? // empty' 2>/dev/null)
-    [ -n "$err" ] && echo "[$(date)] Jira search error: $err"
-    tickets=$(echo "$response" | jq -r '.issues[]?.key // empty' 2>/dev/null)
 
     if [ -n "$tickets" ]; then
       echo "[$(date)] Found tickets: $tickets"
@@ -142,19 +132,10 @@ function process_ticket() {
 
   echo "[$(date)] Starting work on $ticket_id" > "$log_file"
 
-  # Move to the "start" status immediately so the next poll does not re-pick it.
-  echo "[$(date)] Moving ticket to $JIRA_STATUS_START..." >> "$log_file"
-  local start_id
-  start_id=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
-    "https://api.atlassian.com/ex/jira/$JIRA_CLOUD_ID/rest/api/3/issue/$ticket_id/transitions" \
-    | jq -r --arg s "$JIRA_STATUS_START" '.transitions[] | select(.name == $s or .to.name == $s) | .id' | head -1)
-  if [ -n "$start_id" ]; then
-    curl -s -X POST -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json" \
-      "https://api.atlassian.com/ex/jira/$JIRA_CLOUD_ID/rest/api/3/issue/$ticket_id/transitions" \
-      -d "{\"transition\":{\"id\":\"$start_id\"}}" >> "$log_file" 2>&1
-  else
-    echo "[$(date)] WARN: no '$JIRA_STATUS_START' transition available for $ticket_id" >> "$log_file"
-  fi
+  # Mark started immediately so the next poll does not re-pick it.
+  echo "[$(date)] Marking $ticket_id started..." >> "$log_file"
+  node "$TRACKER_CLI" start "$ticket_id" >> "$log_file" 2>&1 \
+    || echo "[$(date)] WARN: markStarted failed for $ticket_id" >> "$log_file"
 
   echo "[$(date)] Creating worktree for $ticket_id..." >> "$log_file"
   if ! cd "$MAIN_PROJECT_DIR"; then
@@ -181,34 +162,36 @@ function process_ticket() {
   fi
 
   local branch_name; branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]')
-  local jira_url="${JIRA_SITE_URL:+$JIRA_SITE_URL/browse/$ticket_id}"
+  local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
+  local pr_ref;   pr_ref=$(node "$TRACKER_CLI" ref "$ticket_id" 2>/dev/null)
+  [ -n "$item_url" ] && echo "[$(date)] ITEM_URL: $item_url" >> "$log_file"
 
-  local prompt="Implement Jira ticket $ticket_id
+  local prompt="Implement work item $ticket_id
 
 **IMPORTANT:** You are in an isolated git worktree at $ticket_worktree on a detached HEAD. DO NOT cd elsewhere. All commands run in the current directory (pwd).
 
-${jira_url:+**Jira URL:** $jira_url}
+${item_url:+**Work item:** $item_url}
 
 **CRITICAL CONSTRAINTS:**
 - You are in an isolated worktree at: $ticket_worktree
-- DO NOT use the Agent/Task tool - work directly (the Jira MCP tools mcp__jira__* are available here)
+- DO NOT use the Agent/Task tool - work directly (the tracker MCP tools mcp__tracker__* are available here)
 - DO NOT cd to any other directory - stay in current directory (pwd)
 - You are on a detached HEAD - do NOT checkout any branch until the end
 - ALL file operations must be in the current directory
 
 **Tasks:**
-1. Read the ticket with \`mcp__jira__get_issue\` (issueKey: $ticket_id) for the summary, description, and comments. Use the summary for the commit/PR title.
+1. Read the work item with \`mcp__tracker__get_item\` (itemId: $ticket_id) for the title, description, and comments. Use the title for the commit/PR title.
 2. You are already on a detached HEAD from main - do NOT checkout any branch yet
 3. Follow .claude/rules/ conventions (if present), CLAUDE.md, and CONTRIBUTING.md guidelines
-4. Implement the requirements from the ticket
+4. Implement the requirements from the item
 5. $JIRA_TEST_INSTRUCTIONS
 6. Commit with an appropriate conventional commit type (feat/fix/refactor/etc): <type>: <summary> [$ticket_id]
 7. Create branch from current commit: git branch $branch_name
 8. Push branch to origin: git push origin $branch_name
 9. Create a draft PR with gh CLI:
-   - Title: \"<type>: <summary> [$ticket_id]\" (same type as the commit)${jira_url:+
-   - Body should include: \"Jira: $jira_url\"}
-10. Move the ticket forward with \`mcp__jira__transition_issue\` (issueKey: $ticket_id, statusName: \"$JIRA_STATUS_DONE\")
+   - Title: \"<type>: <summary> [$ticket_id]\" (same type as the commit)${pr_ref:+
+   - Body should include: \"$pr_ref\"}
+10. Mark the work item done with \`mcp__tracker__finish\` (itemId: $ticket_id)
 
 Work autonomously. When done, report the PR URL."
 
