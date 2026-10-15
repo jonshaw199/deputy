@@ -132,8 +132,13 @@ function watch_and_process() {
     if [ -n "$tickets" ]; then
       echo "[$(date)] Found tickets: $tickets"
       for ticket in $tickets; do
+        local lock="/tmp/deputy-item-${ticket}.lock"
+        if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then
+          echo "[$(date)] $ticket already processing; skipping"
+          continue
+        fi
         echo "[$(date)] Processing $ticket in background... (logs: /tmp/deputy-item-${ticket}.log)"
-        process_ticket "$ticket" &
+        process_ticket "$ticket" & echo $! > "$lock"
       done
     else
       echo "[$(date)] No tickets found"
@@ -190,15 +195,7 @@ function continue_ticket() {
   local lock_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.lock"
   local branch_name; branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]')
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}_cont_${cont_id}"
-
-  if [ -f "$lock_file" ]; then
-    local pid; pid=$(cat "$lock_file" 2>/dev/null)
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      echo "[$(date)] Continuation $cont_id for $ticket_id already running (PID $pid)" >> "$DAEMON_LOG_FILE"; return 0
-    fi
-    rm -f "$lock_file"
-  fi
-  echo $$ > "$lock_file"
+  # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file'" EXIT
 
   echo "[$(date)] Continuation for $ticket_id (cont $cont_id)" > "$log_file"
@@ -316,7 +313,8 @@ Triage each failing check before changing anything:
 3. Fix only the related failures (reproduce locally, fix root cause in code not tests, push).
 4. If all failures are unrelated, do nothing and say so."
 
-    continue_ticket "$ticket_id" "$prompt" "ci-${commit_sha:0:8}" &
+    local clock="/tmp/deputy-item-${ticket_id}-cont-ci-${commit_sha:0:8}.lock"
+    continue_ticket "$ticket_id" "$prompt" "ci-${commit_sha:0:8}" & echo $! > "$clock"
   done <<< "$rows"
 }
 
@@ -335,7 +333,8 @@ function drain_continue_queue() {
     { [ -z "$ticket" ] || [ -z "$prompt" ]; } && continue
     [ -z "$cid" ] && cid="q$(echo "$line" | cksum | cut -d' ' -f1)"
     echo "[$(date)] Local continuation request for $ticket (cont $cid)" >> "$DAEMON_LOG_FILE"
-    continue_ticket "$ticket" "$prompt" "$cid" &
+    local clock="/tmp/deputy-item-${ticket}-cont-${cid}.lock"
+    continue_ticket "$ticket" "$prompt" "$cid" & echo $! > "$clock"
   done < "$tmp"
   rm -f "$tmp"
 }
@@ -356,12 +355,7 @@ function process_ticket() {
   local log_file="/tmp/deputy-item-${ticket_id}.log"
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
   local lock_file="/tmp/deputy-item-${ticket_id}.lock"
-
-  if [ -f "$lock_file" ]; then
-    echo "[$(date)] $ticket_id already being processed (lock exists)" >> "$DAEMON_LOG_FILE"
-    return 0
-  fi
-  echo $$ > "$lock_file"
+  # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file'" EXIT
 
   echo "[$(date)] Starting work on $ticket_id" > "$log_file"
