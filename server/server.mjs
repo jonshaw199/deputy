@@ -33,7 +33,18 @@ const REPOS = (cfg('DEPUTY_REPOS', '') || '').split(',').map((s) => s.trim()).fi
 
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const tail = (path, n = 4000) => { try { const t = readFileSync(path, 'utf8'); return t.length > n ? t.slice(-n) : t; } catch { return ''; } };
-const lastMeaningful = (text) => { const lines = text.split('\n').map((l) => l.trim()).filter(Boolean); return lines[lines.length - 1] || ''; };
+// Last human-meaningful line for the card preview: the agent's last words or the
+// action it's taking, skipping separators / [RESULT] / tool-result noise.
+const lastMeaningful = (text) => {
+  const noise = (l) => !l || /^=+$/.test(l) || /^━+/.test(l) || /^\[(RESULT|STATUS|RUNNER|BLOCKED)\]/.test(l) || l.startsWith('↳');
+  const lines = text.split('\n').map((l) => l.trim());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (noise(l)) continue;
+    return l.replace(/^\[ASSISTANT\]\s*/, '').replace(/^\[YOU\]\s*/, 'you: ');
+  }
+  return '';
+};
 const prUrlIn = (text) => { const m = text.match(/https:\/\/github\.com\/[^\s"']+\/pull\/\d+/g); return m ? m[m.length - 1] : null; };
 const itemUrlIn = (text) => { const m = text.match(/ITEM_URL: (\S+)/g); return m ? m[m.length - 1].replace('ITEM_URL: ', '') : null; };
 

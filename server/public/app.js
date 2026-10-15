@@ -89,33 +89,52 @@ async function refresh() {
   }
 }
 
+let logTimer = null;
+let pendingEcho = '';   // your just-sent message, shown until the real log line lands
+
 async function openLog(target, title) {
   logTarget = target;
+  pendingEcho = '';
   $('#logTitle').textContent = title;
   // Show the reply box only when chatting with a live agent (a ticket, not a poller log).
   $('#logReply').classList.toggle('hidden', !target.ticket);
   $('#logModal').classList.remove('hidden');
   refreshLog();
+  clearInterval(logTimer);
+  logTimer = setInterval(refreshLog, 1000);   // snappy transcript while the chat is open
+  if (target.ticket) $('#replyInput').focus();
 }
 $('#logReply').onsubmit = async (e) => {
   e.preventDefault();
   if (!logTarget?.ticket) return;
-  const inp = $('#replyInput'); const message = inp.value.trim();
+  const inp = $('#replyInput');
+  const btn = e.target.querySelector('button');
+  const message = inp.value.trim();
   if (!message) return;
   inp.value = '';
+  // Optimistic echo: show it instantly, keep showing it until the agent's log catches up.
+  pendingEcho = message;
+  const body = $('#logBody');
+  body.textContent += `\n[YOU] ${message}\n`;
+  body.scrollTop = body.scrollHeight;
+  btn.disabled = true; const label = btn.textContent; btn.textContent = 'Sending…';
   const r = await api('/api/say', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: logTarget.ticket, message }) });
-  if (r.error) { inp.value = message; alert(r.error); }
-  else setTimeout(refreshLog, 500);
+  btn.disabled = false; btn.textContent = label;
+  if (r.error) { pendingEcho = ''; inp.value = message; alert(r.error); } else { inp.focus(); refreshLog(); }
 };
 async function refreshLog() {
+  if (!logTarget) return;
   const q = logTarget.ticket ? `ticket=${encodeURIComponent(logTarget.ticket)}` : `daemon=${encodeURIComponent(logTarget.daemon)}`;
   const { text } = await api(`/api/log?${q}`);
   const body = $('#logBody');
   const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;
-  body.textContent = text || '(empty)';
+  let out = text || '(empty)';
+  // Keep the optimistic echo visible until the real [YOU] line shows up in the log.
+  if (pendingEcho) { if (out.includes(pendingEcho)) pendingEcho = ''; else out += `\n[YOU] ${pendingEcho}\n`; }
+  body.textContent = out;
   if (atBottom) body.scrollTop = body.scrollHeight;
 }
-$('#logClose').onclick = () => { logTarget = null; $('#logModal').classList.add('hidden'); };
+$('#logClose').onclick = () => { logTarget = null; pendingEcho = ''; clearInterval(logTimer); $('#logModal').classList.add('hidden'); };
 
 $('#startForm').onsubmit = async (e) => {
   e.preventDefault();
