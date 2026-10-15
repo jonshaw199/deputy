@@ -25,12 +25,17 @@ you're working on.
 ## Highlights
 
 - **Fully autonomous loop** — poll → implement → push → draft PR → advance the item.
+- **Fixes its own CI** — watches its PRs; when CI goes red it pulls the failures +
+  annotations and pushes a fix automatically.
+- **Follow-ups without leaving the terminal** — tell it "do X next" on any ticket's
+  PR from the dashboard box or `deputy continue <TICKET> "…"`. No PR/Jira comments.
 - **Pluggable trackers** — Jira and GitHub Issues built in; add another in ~80 lines.
+- **Not locked to Claude** — the agent is a swappable command (`DEPUTY_AGENT_CMD`).
 - **Isolated by construction** — one git worktree per item, off `origin/main`,
-  on a detached HEAD. Your working tree is never touched.
+  on a detached HEAD, with its own deps installed. Your working tree is never touched.
 - **Concurrent** — processes multiple items at once, each fully sandboxed.
-- **Live dashboard** — see every daemon, what it's working on right now (with
-  streaming logs), recent PRs, and Start/Stop controls.
+- **Live dashboard** — every daemon, what it's working on now (streaming logs),
+  recent PRs, Start/Stop, and a "tell deputy" box.
 - **Zero company lock-in** — all config lives in `.env`; the repo carries no
   secrets and nothing employer-specific. Fork it, point it anywhere.
 
@@ -53,6 +58,26 @@ Launch the dashboard:
 ```bash
 npm run dashboard        # http://localhost:4319
 ```
+
+Other commands:
+
+```bash
+bin/daemon restart
+bin/daemon continue <TICKET> "also handle the empty state"   # follow-up on its PR
+bin/daemon stop-ticket <TICKET>                              # cancel one in-flight job
+```
+
+## Follow-ups & CI fixes (no comments)
+
+Once a ticket has a PR, you can nudge it without touching GitHub/Jira:
+
+- **Dashboard:** type a ticket + instruction in the "tell deputy…" box, hit Send.
+- **CLI:** `deputy continue <TICKET> "…"`.
+
+Either way the instruction is queued; deputy re-checks-out that PR's branch, runs
+the agent with your note, and pushes to the same PR. **Red CI is handled on its
+own** — no need to ask. (These run follow-ups on an existing PR; they don't steer
+an agent that's mid-implementation.)
 
 ## Trackers
 
@@ -90,7 +115,7 @@ the agent, and the dashboard are all tracker-agnostic.
 - The dashboard and the control API are decoupled: the API reads daemon state
   from `/tmp` and shells out to `bin/daemon`, so any front-end (web, a macOS menu
   bar widget, a CLI) can reuse the same endpoints:
-  `/api/status`, `/api/start`, `/api/stop`, `/api/log`.
+  `/api/status`, `/api/start`, `/api/stop`, `/api/log`, `/api/continue`.
 
 ## Layout
 
