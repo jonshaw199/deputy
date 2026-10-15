@@ -18,6 +18,14 @@ TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
+# How work gets done, kept portable (nothing Claude/Ruby/Ontra-specific is hardcoded):
+#   DEPUTY_AGENT_CMD     - command run in each worktree; reads the task from $DEPUTY_PROMPT
+#   DEPUTY_WORKTREE_SETUP- command run in each fresh worktree (deps install etc.); may be empty
+#   DEPUTY_SYMLINK_FILES - gitignored files to symlink from the main repo into each worktree
+AGENT_CMD="${DEPUTY_AGENT_CMD:-node \"$RUNNER_PATH\"}"
+WORKTREE_SETUP="${DEPUTY_WORKTREE_SETUP:-}"
+SYMLINK_FILES="${DEPUTY_SYMLINK_FILES:-.env .env.local}"
+
 # The daemon operates on the repo it is launched from.
 MAIN_PROJECT_DIR="$(pwd)"
 PROJECT_NAME="$(basename "$MAIN_PROJECT_DIR")"
@@ -117,6 +125,33 @@ function watch_and_process() {
   done
 }
 
+function setup_worktree() {
+  local worktree=$1 log_file=$2
+  echo "[$(date)] Setting up worktree..." >> "$log_file"
+
+  # Symlink gitignored config files so the worktree shares live config
+  for f in $SYMLINK_FILES; do
+    [ -e "$MAIN_PROJECT_DIR/$f" ] || continue
+    rm -f "$worktree/$f"
+    ln -sf "$MAIN_PROJECT_DIR/$f" "$worktree/$f" 2>> "$log_file" || true
+  done
+
+  # Project-specific setup to match the branch (deps install, etc.); configurable, may be empty
+  if [ -n "$WORKTREE_SETUP" ]; then
+    echo "[$(date)] Running worktree setup: $WORKTREE_SETUP" >> "$log_file"
+    (cd "$worktree" && eval "$WORKTREE_SETUP" >> "$log_file" 2>&1) \
+      || echo "[$(date)] WARN: worktree setup returned non-zero" >> "$log_file"
+  fi
+
+  # Make the agent runtime deps resolvable in the worktree without clobbering installed deps
+  mkdir -p "$worktree/node_modules"
+  for dep in @anthropic-ai @modelcontextprotocol zod; do
+    [ -e "$AUTOMATION_BASE_DIR/node_modules/$dep" ] || continue
+    rm -rf "$worktree/node_modules/$dep"
+    ln -sf "$AUTOMATION_BASE_DIR/node_modules/$dep" "$worktree/node_modules/$dep" 2>> "$log_file" || true
+  done
+}
+
 function process_ticket() {
   local ticket_id=$1
   local log_file="/tmp/deputy-item-${ticket_id}.log"
@@ -152,14 +187,7 @@ function process_ticket() {
     rm -f "$lock_file"; return 1
   fi
 
-  # Bring over gitignored env + deps the worktree needs.
-  [ -f "$MAIN_PROJECT_DIR/.env" ] && cp "$MAIN_PROJECT_DIR/.env" "$ticket_worktree/.env" 2>>"$log_file"
-  rm -rf "$ticket_worktree/node_modules" 2>>"$log_file"
-  ln -sf "$AUTOMATION_BASE_DIR/node_modules" "$ticket_worktree/node_modules" >> "$log_file" 2>&1
-  if [ -f "$MAIN_PROJECT_DIR/.env.local" ]; then
-    rm -f "$ticket_worktree/.env.local" 2>>"$log_file"
-    ln -sf "$MAIN_PROJECT_DIR/.env.local" "$ticket_worktree/.env.local" >> "$log_file" 2>&1
-  fi
+  setup_worktree "$ticket_worktree" "$log_file"
 
   local branch_name; branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]')
   local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
@@ -196,8 +224,8 @@ ${item_url:+**Work item:** $item_url}
 Work autonomously. When done, report the PR URL."
 
   local timeout_mins=$((CLAUDE_TIMEOUT_SECONDS / 60))
-  echo "[$(date)] Starting Claude (max ${timeout_mins} min)..." >> "$log_file"
-  cd "$ticket_worktree" && env -u CLAUDECODE timeout "$CLAUDE_TIMEOUT_SECONDS" node "$RUNNER_PATH" "$prompt" >> "$log_file" 2>&1
+  echo "[$(date)] Starting agent (max ${timeout_mins} min)..." >> "$log_file"
+  cd "$ticket_worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$prompt" timeout "$CLAUDE_TIMEOUT_SECONDS" bash -c "$AGENT_CMD" >> "$log_file" 2>&1
   local exit_code=$?
 
   if [ $exit_code -eq 124 ]; then
