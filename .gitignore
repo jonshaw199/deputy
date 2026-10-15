@@ -1,0 +1,10 @@
+# Secrets — never commit real credentials
+.env
+
+# Dependencies
+node_modules/
+
+# Runtime state / logs
+*.log
+*.pid
+*.meta

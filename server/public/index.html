@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jira AI Daemon</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1><span id="globalDot" class="dot"></span> Jira AI Daemon</h1>
+    <div class="muted" id="updated">loading…</div>
+  </header>
+
+  <main>
+    <section>
+      <div class="section-head">
+        <h2>Daemons</h2>
+        <form id="startForm" class="start">
+          <select id="repoSelect"><option value="">Start a daemon…</option></select>
+          <button type="submit">Start</button>
+        </form>
+      </div>
+      <div id="daemons" class="cards"></div>
+    </section>
+
+    <section>
+      <h2>Active work</h2>
+      <div id="active" class="cards"></div>
+    </section>
+  </main>
+
+  <div id="logModal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span id="logTitle"></span>
+        <button id="logClose">✕</button>
+      </div>
+      <pre id="logBody"></pre>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

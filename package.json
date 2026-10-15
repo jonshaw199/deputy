@@ -1,0 +1,19 @@
+{
+  "name": "jira-ai-daemon",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local daemon that watches Jira for AI-ready tickets and resolves them with the Claude Agent SDK, with a web dashboard.",
+  "bin": {
+    "jira-daemon": "bin/daemon"
+  },
+  "scripts": {
+    "dashboard": "node server/server.mjs",
+    "start": "bin/daemon start",
+    "stop": "bin/daemon stop",
+    "status": "bin/daemon status"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
