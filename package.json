@@ -1,11 +1,11 @@
 {
-  "name": "jira-ai-daemon",
+  "name": "ai-work-daemon",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Local daemon that watches Jira for AI-ready tickets and resolves them with the Claude Agent SDK, with a web dashboard.",
+  "description": "Local daemon that watches a tracker (Jira / GitHub Issues) for AI-ready work items and resolves each with the Claude Agent SDK, with a web dashboard.",
   "bin": {
-    "jira-daemon": "bin/daemon"
+    "ai-work-daemon": "bin/daemon"
   },
   "scripts": {
     "dashboard": "node server/server.mjs",

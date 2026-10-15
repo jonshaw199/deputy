@@ -1,78 +1,110 @@
-# Jira AI Daemon
+# AI Work Daemon
 
-A local daemon that watches Jira for ready, AI-labelled tickets and resolves each
-one autonomously with the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk):
-it creates an isolated git worktree, implements the ticket, pushes a branch, opens
-a draft PR, and moves the ticket forward. Ships with a web dashboard.
+**Point it at your backlog. It ships PRs while you sleep.**
 
-Nothing here is tied to a specific company. Point it at any Jira Cloud site and any
-GitHub repo via `.env`.
+A local daemon that watches a tracker (Jira or GitHub Issues) for ready,
+AI-labelled work items and resolves each one autonomously with the
+[Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk):
+isolated git worktree → implement → push → draft PR → move the item forward.
+Comes with a live web dashboard.
 
-## Trackers (where work items come from)
+![AI Work Daemon dashboard](docs/dashboard.png)
 
-The work source is pluggable. Pick one with `JIRA_AUTOMATION_TRACKER`:
+---
 
-- `jira` — polls by JQL (label + status); marks progress by moving the ticket's status.
-- `github` — polls open GitHub issues by label; marks progress by swapping labels.
+## Why
 
-Each tracker is one small module in `lib/trackers/` implementing six methods
-(`listReady`, `getItem`, `markStarted`, `markDone`, `itemUrl`, `prRef`). To add
-Linear or anything else, drop in a module and register it in `lib/trackers/index.mjs`.
-The daemon, the agent, and the dashboard are all tracker-agnostic.
+You label a ticket `ai-ready`. A few minutes later there's a draft PR waiting for
+review and the ticket is in review. No prompts to babysit, no copy-pasting
+tickets into a chat window. It runs on your machine, uses your credentials, and
+every change lands in its own throwaway git worktree so it never touches what
+you're working on.
 
-## Setup
+## Highlights
+
+- **Fully autonomous loop** — poll → implement → push → draft PR → advance the item.
+- **Pluggable trackers** — Jira and GitHub Issues built in; add another in ~80 lines.
+- **Isolated by construction** — one git worktree per item, off `origin/main`,
+  on a detached HEAD. Your working tree is never touched.
+- **Concurrent** — processes multiple items at once, each fully sandboxed.
+- **Live dashboard** — see every daemon, what it's working on right now (with
+  streaming logs), recent PRs, and Start/Stop controls.
+- **Zero company lock-in** — all config lives in `.env`; the repo carries no
+  secrets and nothing employer-specific. Fork it, point it anywhere.
+
+## Quickstart
 
 ```bash
-cp .env.example .env     # fill in your Jira + GitHub credentials
-npm install              # only needed for the dashboard; the daemon installs its
-                         # own runtime deps into <repo>_automation on first start
+cp .env.example .env     # fill in your tracker + GitHub credentials
+npm install              # for the dashboard (the daemon installs its own runtime deps)
 ```
 
-Required in `.env`: `JIRA_AUTOMATION_USER_EMAIL`, `JIRA_AUTOMATION_API_TOKEN`,
-`JIRA_AUTOMATION_CLOUD_ID`. See `.env.example` for the full list, including your
-workflow status names and the label to watch.
-
-## Run the daemon
-
-Run it **from the repo you want it to work on** (that repo is the base for every
-worktree):
+Run it **from the repo you want it to work on**:
 
 ```bash
 cd ~/code/my-app
-/path/to/jira-daemon/bin/daemon start    # also: stop | status
+/path/to/ai-work-daemon/bin/daemon start      # also: stop | status
 ```
 
-It polls Jira every `JIRA_AUTOMATION_CHECK_INTERVAL` seconds for tickets with your
-label in the `STATUS_READY` status, and for each one moves it to `STATUS_START`,
-does the work, opens a draft PR, and moves it to `STATUS_DONE`.
-
-Logs:
+Launch the dashboard:
 
 ```bash
-tail -f /tmp/jira-automation-daemon-<repo>.log   # the poller
-tail -f /tmp/jira-automation-<TICKET>.log        # one ticket, streaming
+npm run dashboard        # http://localhost:4319
 ```
 
-## Dashboard
+## Trackers
 
-```bash
-npm run dashboard     # http://localhost:4319
+Pick where work comes from with `AIDAEMON_TRACKER`:
+
+| Tracker  | Polls                      | "started" / "done"        |
+|----------|----------------------------|---------------------------|
+| `jira`   | JQL: label + status        | moves the ticket's status |
+| `github` | open issues with a label   | swaps labels              |
+
+Each tracker is one small module in [`lib/trackers/`](lib/trackers/) implementing
+six methods — `listReady`, `getItem`, `markStarted`, `markDone`, `itemUrl`,
+`prRef`. Drop in `linear.mjs`, register it in
+[`lib/trackers/index.mjs`](lib/trackers/index.mjs), and you're done. The daemon,
+the agent, and the dashboard are all tracker-agnostic.
+
+## How it works
+
+```
+         ┌──────────── bin/daemon (one per repo) ─────────┐
+ tracker │  poll ready items  ──▶  for each item:         │
+  (Jira/ │                          • git worktree off origin/main
+  GitHub)│                          • run the agent (Claude Agent SDK)
+         │                          • push branch, open draft PR          │
+         │                          • mark the item done                  │
+         └────────────────────────────────────────────────┘
+                     ▲                         │ reads /tmp state
+                     │ start / stop            ▼
+              server/server.mjs  ◀──────  web dashboard (or a future menu bar)
 ```
 
-Shows every running daemon, what each is working on right now (with live logs),
-recent outcomes with PR links, and Start/Stop controls. To enable Start from the
-UI, list the repo paths it may launch in via `JIRA_AUTOMATION_REPOS`.
+- The agent runs with an **in-process MCP server** (`mcp__tracker__*`) so it can
+  read the item and mark it done through whatever tracker is configured — it
+  never learns the backend.
+- The dashboard and the control API are decoupled: the API reads daemon state
+  from `/tmp` and shells out to `bin/daemon`, so any front-end (web, a macOS menu
+  bar widget, a CLI) can reuse the same endpoints:
+  `/api/status`, `/api/start`, `/api/stop`, `/api/log`.
 
 ## Layout
 
 ```
-bin/daemon                 the poll-and-resolve daemon (bash)
-lib/claude-agent-runner.mjs the Agent SDK runner + in-process Jira MCP tools
-config.sh                  loads .env and maps it to the daemon's variables
-server/server.mjs          control + status HTTP API (the shared "brain")
-server/public/             the web dashboard (vanilla JS, no build step)
+bin/daemon                   the poll-and-resolve loop (bash)
+lib/claude-agent-runner.mjs  the Agent SDK runner + in-process tracker MCP tools
+lib/trackers/                one module per backend (jira, github-issues, …)
+lib/tracker-cli.mjs          bash↔tracker bridge (list-ready / start / url / ref)
+config.sh                    loads .env into the environment
+server/server.mjs            control + status HTTP API
+server/public/               the dashboard (vanilla JS, no build step)
 ```
 
-The dashboard and the API are decoupled: the API reads daemon state from `/tmp`
-and shells out to `bin/daemon`, so other front-ends (e.g. a macOS menu bar widget)
-can reuse the same endpoints (`/api/status`, `/api/start`, `/api/stop`, `/api/log`).
+## Configuration
+
+Everything is driven by `AIDAEMON_*` variables in `.env` — see
+[`.env.example`](.env.example) for the full list. Required: tracker credentials
+and a GitHub token. One daemon runs per repo; list repo paths in `AIDAEMON_REPOS`
+to start them from the dashboard.

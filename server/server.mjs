@@ -27,9 +27,9 @@ function parseEnvFile(path) {
 const fileEnv = parseEnvFile(join(PROJECT_ROOT, '.env'));
 const cfg = (k, d) => process.env[k] ?? fileEnv[k] ?? d;
 
-const PORT = Number(cfg('JIRA_AUTOMATION_DASHBOARD_PORT', '4319'));
-const SITE_URL = cfg('JIRA_AUTOMATION_SITE_URL', '');
-const REPOS = (cfg('JIRA_AUTOMATION_REPOS', '') || '').split(',').map((s) => s.trim()).filter(Boolean);
+const PORT = Number(cfg('AIDAEMON_DASHBOARD_PORT', '4319'));
+const SITE_URL = cfg('AIDAEMON_SITE_URL', '');
+const REPOS = (cfg('AIDAEMON_REPOS', '') || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const tail = (path, n = 4000) => { try { const t = readFileSync(path, 'utf8'); return t.length > n ? t.slice(-n) : t; } catch { return ''; } };
@@ -39,27 +39,27 @@ const itemUrlIn = (text) => { const m = text.match(/ITEM_URL: (\S+)/g); return m
 
 function listDaemons() {
   return readdirSync(TMP)
-    .map((f) => f.match(/^jira-automation-daemon-(.+)\.pid$/))
+    .map((f) => f.match(/^aidaemon-(.+)\.pid$/))
     .filter(Boolean)
     .map((m) => {
       const project = m[1];
-      const pid = Number(tail(join(TMP, `jira-automation-daemon-${project}.pid`)).trim());
-      const log = tail(join(TMP, `jira-automation-daemon-${project}.log`), 20000);
-      const repoDir = tail(join(TMP, `jira-automation-daemon-${project}.meta`)).trim() || null;
+      const pid = Number(tail(join(TMP, `aidaemon-${project}.pid`)).trim());
+      const log = tail(join(TMP, `aidaemon-${project}.log`), 20000);
+      const repoDir = tail(join(TMP, `aidaemon-${project}.meta`)).trim() || null;
       const recent = [...log.matchAll(/\[(.+?)\]\s+(SUCCESS|FAILED|TIMEOUT):\s+(\S+)/g)]
         .slice(-12).reverse()
-        .map((r) => ({ ts: r[1], outcome: r[2], ticket: r[3], pr: prUrlIn(tail(join(TMP, `jira-automation-${r[3]}.log`))) }));
-      return { project, pid, running: isAlive(pid), repoDir, interval: Number(cfg('JIRA_AUTOMATION_CHECK_INTERVAL', '300')), recent };
+        .map((r) => ({ ts: r[1], outcome: r[2], ticket: r[3], pr: prUrlIn(tail(join(TMP, `aidaemon-item-${r[3]}.log`))) }));
+      return { project, pid, running: isAlive(pid), repoDir, interval: Number(cfg('AIDAEMON_CHECK_INTERVAL', '300')), recent };
     });
 }
 
 function listActive() {
   return readdirSync(TMP)
-    .map((f) => f.match(/^jira-automation-(.+)\.lock$/))
+    .map((f) => f.match(/^aidaemon-item-(.+)\.lock$/))
     .filter((m) => m && !m[1].startsWith('daemon-'))
     .map((m) => {
       const ticket = m[1];
-      const log = tail(join(TMP, `jira-automation-${ticket}.log`));
+      const log = tail(join(TMP, `aidaemon-item-${ticket}.log`));
       return { ticket, phase: lastMeaningful(log), pr: prUrlIn(log), item: itemUrlIn(log) };
     });
 }
@@ -84,7 +84,7 @@ const server = createServer(async (req, res) => {
   if (path === '/api/log') {
     const ticket = url.searchParams.get('ticket');
     const project = url.searchParams.get('daemon');
-    const file = ticket ? `jira-automation-${ticket}.log` : project ? `jira-automation-daemon-${project}.log` : null;
+    const file = ticket ? `aidaemon-item-${ticket}.log` : project ? `aidaemon-${project}.log` : null;
     if (!file) return json(res, 400, { error: 'ticket or daemon required' });
     return json(res, 200, { text: tail(join(TMP, file), 20000) });
   }
@@ -96,7 +96,7 @@ const server = createServer(async (req, res) => {
   }
   if (path === '/api/start' && req.method === 'POST') {
     const { repo } = await readBody(req);
-    if (!REPOS.includes(repo)) return json(res, 400, { error: 'repo not in JIRA_AUTOMATION_REPOS allowlist' });
+    if (!REPOS.includes(repo)) return json(res, 400, { error: 'repo not in AIDAEMON_REPOS allowlist' });
     return json(res, 200, await runDaemon(repo, 'start'));
   }
 
@@ -110,4 +110,4 @@ const server = createServer(async (req, res) => {
   res.writeHead(404); res.end('Not found');
 });
 
-server.listen(PORT, () => console.log(`Jira daemon dashboard: http://localhost:${PORT}`));
+server.listen(PORT, () => console.log(`AI Work Daemon dashboard: http://localhost:${PORT}`));

@@ -7,8 +7,8 @@
 #   /path/to/jira-daemon/bin/daemon start|stop|status
 #
 # Logs:
-#   tail -f /tmp/jira-automation-daemon-<repo>.log   # poller
-#   tail -f /tmp/jira-automation-<TICKET>.log        # per-ticket (streaming)
+#   tail -f /tmp/aidaemon-<repo>.log   # poller
+#   tail -f /tmp/aidaemon-item-<TICKET>.log        # per-ticket (streaming)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -21,11 +21,11 @@ source "$PROJECT_ROOT/config.sh"
 # The daemon operates on the repo it is launched from.
 MAIN_PROJECT_DIR="$(pwd)"
 PROJECT_NAME="$(basename "$MAIN_PROJECT_DIR")"
-AUTOMATION_BASE_DIR="${MAIN_PROJECT_DIR}_automation"
+AUTOMATION_BASE_DIR="${MAIN_PROJECT_DIR}_aidaemon"
 
-DAEMON_PID_FILE="/tmp/jira-automation-daemon-${PROJECT_NAME}.pid"
-DAEMON_LOG_FILE="/tmp/jira-automation-daemon-${PROJECT_NAME}.log"
-DAEMON_META_FILE="/tmp/jira-automation-daemon-${PROJECT_NAME}.meta"
+DAEMON_PID_FILE="/tmp/aidaemon-${PROJECT_NAME}.pid"
+DAEMON_LOG_FILE="/tmp/aidaemon-${PROJECT_NAME}.log"
+DAEMON_META_FILE="/tmp/aidaemon-${PROJECT_NAME}.meta"
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
 function preflight_tracker() {
@@ -106,7 +106,7 @@ function watch_and_process() {
     if [ -n "$tickets" ]; then
       echo "[$(date)] Found tickets: $tickets"
       for ticket in $tickets; do
-        echo "[$(date)] Processing $ticket in background... (logs: /tmp/jira-automation-${ticket}.log)"
+        echo "[$(date)] Processing $ticket in background... (logs: /tmp/aidaemon-item-${ticket}.log)"
         process_ticket "$ticket" &
       done
     else
@@ -119,9 +119,9 @@ function watch_and_process() {
 
 function process_ticket() {
   local ticket_id=$1
-  local log_file="/tmp/jira-automation-${ticket_id}.log"
+  local log_file="/tmp/aidaemon-item-${ticket_id}.log"
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
-  local lock_file="/tmp/jira-automation-${ticket_id}.lock"
+  local lock_file="/tmp/aidaemon-item-${ticket_id}.lock"
 
   if [ -f "$lock_file" ]; then
     echo "[$(date)] $ticket_id already being processed (lock exists)" >> "$DAEMON_LOG_FILE"
@@ -184,7 +184,7 @@ ${item_url:+**Work item:** $item_url}
 2. You are already on a detached HEAD from main - do NOT checkout any branch yet
 3. Follow .claude/rules/ conventions (if present), CLAUDE.md, and CONTRIBUTING.md guidelines
 4. Implement the requirements from the item
-5. $JIRA_TEST_INSTRUCTIONS
+5. $TEST_INSTRUCTIONS
 6. Commit with an appropriate conventional commit type (feat/fix/refactor/etc): <type>: <summary> [$ticket_id]
 7. Create branch from current commit: git branch $branch_name
 8. Push branch to origin: git push origin $branch_name
