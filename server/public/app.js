@@ -17,14 +17,14 @@ function badge(outcome) {
 function renderDaemons(daemons) {
   const wrap = $('#daemons');
   wrap.innerHTML = '';
-  if (!daemons.length) { wrap.append(el('div', 'muted', 'No daemons running. Start one above or from the CLI.')); return; }
+  if (!daemons.length) { wrap.append(el('div', 'muted', '🤠 No deputies on patrol. Deputize a repo above, or start one from the CLI.')); return; }
   for (const d of daemons) {
     const card = el('div', 'card');
     const dot = d.running ? 'ok' : 'off';
     card.append(el('div', 'row', `
       <div>
         <h3><span class="dot ${dot}"></span> ${esc(d.project)}</h3>
-        <div class="sub">${d.running ? `running · pid ${d.pid} · every ${d.interval}s` : 'stopped'}</div>
+        <div class="sub">${d.running ? `on patrol · pid ${d.pid} · checks every ${d.interval}s` : 'off duty'}</div>
         <div class="sub">${esc(d.repoDir || '')}</div>
       </div>`));
     const actions = el('div');
@@ -33,13 +33,13 @@ function renderDaemons(daemons) {
       stop.onclick = async () => { stop.disabled = true; await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project }) }); refresh(); };
       actions.append(stop);
     }
-    const viewLog = el('button', 'linklike', 'poller log');
-    viewLog.onclick = () => openLog({ daemon: d.project }, `${d.project} poller`);
+    const viewLog = el('button', 'linklike', 'patrol log');
+    viewLog.onclick = () => openLog({ daemon: d.project }, `${d.project} · patrol log`);
     card.querySelector('.row').append(actions);
 
     if (d.recent.length) {
       const recent = el('div', 'recent');
-      recent.append(el('div', 'muted', 'Recent'));
+      recent.append(el('div', 'muted', 'Recent cases'));
       for (const r of d.recent) {
         const item = el('div', 'item');
         const pr = r.pr ? ` · <a href="${r.pr}" target="_blank">PR</a>` : '';
@@ -56,7 +56,7 @@ function renderDaemons(daemons) {
 function renderActive(active) {
   const wrap = $('#active');
   wrap.innerHTML = '';
-  if (!active.length) { wrap.append(el('div', 'muted', 'Nothing in progress.')); return; }
+  if (!active.length) { wrap.append(el('div', 'muted', '🌵 All quiet in town. No open cases right now.')); return; }
   for (const a of active) {
     const card = el('div', 'card');
     const item = a.item ? ` · <a href="${a.item}" target="_blank">ticket</a>` : '';
@@ -75,7 +75,7 @@ async function refresh() {
     const anyRunning = s.daemons.some((d) => d.running);
     const anyBusy = s.active.length > 0;
     $('#globalDot').className = `dot ${anyBusy ? 'busy' : anyRunning ? 'ok' : 'off'}`;
-    $('#updated').textContent = `${s.daemons.filter((d) => d.running).length} running · ${s.active.length} active · ${new Date().toLocaleTimeString()}`;
+    $('#updated').textContent = `${s.daemons.filter((d) => d.running).length} on patrol · ${s.active.length} on the job · ${new Date().toLocaleTimeString()}`;
 
     const sel = $('#repoSelect');
     if (sel.options.length <= 1 && s.repos.length) {
