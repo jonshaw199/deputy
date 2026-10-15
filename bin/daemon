@@ -120,6 +120,9 @@ function status_daemon() {
 }
 
 function watch_and_process() {
+  # SIGUSR1 (sent by `continue` / the dashboard) drains the queue immediately
+  # instead of waiting for the next poll.
+  trap 'drain_continue_queue' USR1
   while true; do
     echo "[$(date)] Checking for ready work items..."
 
@@ -148,7 +151,9 @@ function watch_and_process() {
     check_for_ci_failures
     drain_continue_queue
 
-    sleep "$CHECK_INTERVAL"
+    # Interruptible sleep: a SIGUSR1 nudge (continue/dashboard) breaks out of this
+    # immediately via the trap, instead of waiting out the whole interval.
+    sleep "$CHECK_INTERVAL" & wait $! 2>/dev/null
   done
 }
 
@@ -347,7 +352,13 @@ function enqueue_continue() {
   fi
   jq -nc --arg t "$ticket" --arg p "$prompt" --arg id "cli-$(date +%s)-$$" \
     '{ticket:$t, prompt:$p, id:$id}' >> "$QUEUE_FILE"
-  echo "Queued continuation for $ticket (the running daemon will pick it up)."
+  # Nudge the running daemon to drain the queue now (instead of waiting for the poll).
+  local dpid; dpid=$(cat "$DAEMON_PID_FILE" 2>/dev/null)
+  if [ -n "$dpid" ] && kill -USR1 "$dpid" 2>/dev/null; then
+    echo "Queued continuation for $ticket (daemon notified; picking it up now)."
+  else
+    echo "Queued continuation for $ticket (no running daemon; it will run on next start)."
+  fi
 }
 
 function process_ticket() {

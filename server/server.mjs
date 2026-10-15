@@ -105,6 +105,8 @@ const server = createServer(async (req, res) => {
     if (!ticket || !prompt) return json(res, 400, { error: 'ticket and prompt required' });
     const line = JSON.stringify({ ticket, prompt, id: `web-${ticket}-${Date.now()}` });
     appendFileSync(join(TMP, `deputy-queue-${project}.jsonl`), line + '\n');
+    // Nudge the daemon to drain the queue now instead of waiting for the poll.
+    try { process.kill(Number(tail(join(TMP, `deputy-${project}.pid`)).trim()), 'SIGUSR1'); } catch {}
     return json(res, 200, { ok: true });
   }
 
