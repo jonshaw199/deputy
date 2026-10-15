@@ -7,8 +7,8 @@
 #   /path/to/jira-daemon/bin/daemon start|stop|status
 #
 # Logs:
-#   tail -f /tmp/aidaemon-<repo>.log   # poller
-#   tail -f /tmp/aidaemon-item-<TICKET>.log        # per-ticket (streaming)
+#   tail -f /tmp/deputy-<repo>.log   # poller
+#   tail -f /tmp/deputy-item-<TICKET>.log        # per-ticket (streaming)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -21,11 +21,11 @@ source "$PROJECT_ROOT/config.sh"
 # The daemon operates on the repo it is launched from.
 MAIN_PROJECT_DIR="$(pwd)"
 PROJECT_NAME="$(basename "$MAIN_PROJECT_DIR")"
-AUTOMATION_BASE_DIR="${MAIN_PROJECT_DIR}_aidaemon"
+AUTOMATION_BASE_DIR="${MAIN_PROJECT_DIR}_deputy"
 
-DAEMON_PID_FILE="/tmp/aidaemon-${PROJECT_NAME}.pid"
-DAEMON_LOG_FILE="/tmp/aidaemon-${PROJECT_NAME}.log"
-DAEMON_META_FILE="/tmp/aidaemon-${PROJECT_NAME}.meta"
+DAEMON_PID_FILE="/tmp/deputy-${PROJECT_NAME}.pid"
+DAEMON_LOG_FILE="/tmp/deputy-${PROJECT_NAME}.log"
+DAEMON_META_FILE="/tmp/deputy-${PROJECT_NAME}.meta"
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
 function preflight_tracker() {
@@ -106,7 +106,7 @@ function watch_and_process() {
     if [ -n "$tickets" ]; then
       echo "[$(date)] Found tickets: $tickets"
       for ticket in $tickets; do
-        echo "[$(date)] Processing $ticket in background... (logs: /tmp/aidaemon-item-${ticket}.log)"
+        echo "[$(date)] Processing $ticket in background... (logs: /tmp/deputy-item-${ticket}.log)"
         process_ticket "$ticket" &
       done
     else
@@ -119,9 +119,9 @@ function watch_and_process() {
 
 function process_ticket() {
   local ticket_id=$1
-  local log_file="/tmp/aidaemon-item-${ticket_id}.log"
+  local log_file="/tmp/deputy-item-${ticket_id}.log"
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
-  local lock_file="/tmp/aidaemon-item-${ticket_id}.lock"
+  local lock_file="/tmp/deputy-item-${ticket_id}.lock"
 
   if [ -f "$lock_file" ]; then
     echo "[$(date)] $ticket_id already being processed (lock exists)" >> "$DAEMON_LOG_FILE"

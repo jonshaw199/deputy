@@ -1,11 +1,11 @@
 {
-  "name": "ai-work-daemon",
+  "name": "deputy",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Local daemon that watches a tracker (Jira / GitHub Issues) for AI-ready work items and resolves each with the Claude Agent SDK, with a web dashboard.",
   "bin": {
-    "ai-work-daemon": "bin/daemon"
+    "deputy": "bin/daemon"
   },
   "scripts": {
     "dashboard": "node server/server.mjs",

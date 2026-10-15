@@ -1,4 +1,6 @@
-# AI Work Daemon
+<img src="docs/icon.svg" width="72" alt="Deputy" />
+
+# Deputy
 
 **Point it at your backlog. It ships PRs while you sleep.**
 
@@ -8,7 +10,7 @@ AI-labelled work items and resolves each one autonomously with the
 isolated git worktree → implement → push → draft PR → move the item forward.
 Comes with a live web dashboard.
 
-![AI Work Daemon dashboard](docs/dashboard.png)
+![Deputy dashboard](docs/dashboard.png)
 
 ---
 
@@ -43,7 +45,7 @@ Run it **from the repo you want it to work on**:
 
 ```bash
 cd ~/code/my-app
-/path/to/ai-work-daemon/bin/daemon start      # also: stop | status
+/path/to/deputy/bin/daemon start      # also: stop | status
 ```
 
 Launch the dashboard:
@@ -54,7 +56,7 @@ npm run dashboard        # http://localhost:4319
 
 ## Trackers
 
-Pick where work comes from with `AIDAEMON_TRACKER`:
+Pick where work comes from with `DEPUTY_TRACKER`:
 
 | Tracker  | Polls                      | "started" / "done"        |
 |----------|----------------------------|---------------------------|
@@ -104,7 +106,7 @@ server/public/               the dashboard (vanilla JS, no build step)
 
 ## Configuration
 
-Everything is driven by `AIDAEMON_*` variables in `.env` — see
+Everything is driven by `DEPUTY_*` variables in `.env` — see
 [`.env.example`](.env.example) for the full list. Required: tracker credentials
-and a GitHub token. One daemon runs per repo; list repo paths in `AIDAEMON_REPOS`
+and a GitHub token. One daemon runs per repo; list repo paths in `DEPUTY_REPOS`
 to start them from the dashboard.
