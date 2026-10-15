@@ -185,10 +185,12 @@ function setup_worktree() {
 }
 
 function run_agent() {
-  # run_agent <worktree> <prompt> <log_file> ; returns the agent's exit code
-  local worktree=$1 agent_prompt=$2 lf=$3
+  # run_agent <worktree> <prompt> <log_file> [input_file]
+  # If input_file is given, the agent runs as a LIVE session reading follow-ups
+  # appended to it (you can chat with it mid-run). Returns the agent's exit code.
+  local worktree=$1 agent_prompt=$2 lf=$3 input_file=$4
   [ -n "$PRE_AGENT" ] && eval "$PRE_AGENT" >> "$lf" 2>&1
-  ( cd "$worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$agent_prompt" \
+  ( cd "$worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$agent_prompt" ${input_file:+DEPUTY_INPUT="$input_file"} \
       timeout "$CLAUDE_TIMEOUT_SECONDS" bash -c "$AGENT_CMD" >> "$lf" 2>&1 )
 }
 
@@ -366,8 +368,10 @@ function process_ticket() {
   local log_file="/tmp/deputy-item-${ticket_id}.log"
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
   local lock_file="/tmp/deputy-item-${ticket_id}.lock"
+  local input_file="/tmp/deputy-input-${ticket_id}.jsonl"   # live chat channel for this agent
+  : > "$input_file"
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
-  trap "rm -f '$lock_file'" EXIT
+  trap "rm -f '$lock_file' '$input_file'" EXIT
 
   echo "[$(date)] Starting work on $ticket_id" > "$log_file"
 
@@ -425,11 +429,14 @@ ${item_url:+**Work item:** $item_url}
    - Body should include: \"$pr_ref\"}
 10. Mark the work item done with \`mcp__tracker__finish\` (itemId: $ticket_id)
 
+You may receive follow-up messages while you work (via the dashboard) — treat each as
+additional instructions in this same session and keep going.
+
 Work autonomously. When done, report the PR URL."
 
   local timeout_mins=$((CLAUDE_TIMEOUT_SECONDS / 60))
-  echo "[$(date)] Starting agent (max ${timeout_mins} min)..." >> "$log_file"
-  run_agent "$ticket_worktree" "$prompt" "$log_file"
+  echo "[$(date)] Starting agent (max ${timeout_mins} min, live chat via dashboard)..." >> "$log_file"
+  run_agent "$ticket_worktree" "$prompt" "$log_file" "$input_file"
   local exit_code=$?
 
   if [ $exit_code -eq 124 ]; then

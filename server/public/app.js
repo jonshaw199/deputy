@@ -49,20 +49,6 @@ function renderDaemons(daemons) {
       card.append(recent);
     }
     const footer = el('div', 'recent'); footer.append(viewLog); card.append(footer);
-
-    if (d.running) {
-      const form = el('form', 'tell');
-      form.innerHTML = `<input name="ticket" placeholder="TICKET" /><input name="prompt" placeholder="tell deputy to…" /><button type="submit">Send</button>`;
-      form.onsubmit = async (e) => {
-        e.preventDefault();
-        const ticket = form.ticket.value.trim(), prompt = form.prompt.value.trim();
-        if (!ticket || !prompt) return;
-        const btn = form.querySelector('button'); btn.disabled = true;
-        await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project, ticket, prompt }) });
-        form.reset(); btn.disabled = false;
-      };
-      card.append(form);
-    }
     wrap.append(card);
   }
 }
@@ -76,7 +62,7 @@ function renderActive(active) {
     const item = a.item ? ` · <a href="${a.item}" target="_blank">ticket</a>` : '';
     const pr = a.pr ? ` · <a href="${a.pr}" target="_blank">PR</a>` : '';
     card.append(el('div', null, `<h3><span class="dot busy"></span> ${esc(a.ticket)}</h3><div class="sub">${esc(a.phase).slice(0, 160)}</div><div class="sub">${item}${pr}</div>`));
-    const log = el('button', 'linklike', 'live log');
+    const log = el('button', 'linklike', '💬 chat / live log');
     log.onclick = () => openLog({ ticket: a.ticket }, a.ticket);
     const footer = el('div', 'recent'); footer.append(log); card.append(footer);
     wrap.append(card);
@@ -106,9 +92,21 @@ async function refresh() {
 async function openLog(target, title) {
   logTarget = target;
   $('#logTitle').textContent = title;
+  // Show the reply box only when chatting with a live agent (a ticket, not a poller log).
+  $('#logReply').classList.toggle('hidden', !target.ticket);
   $('#logModal').classList.remove('hidden');
   refreshLog();
 }
+$('#logReply').onsubmit = async (e) => {
+  e.preventDefault();
+  if (!logTarget?.ticket) return;
+  const inp = $('#replyInput'); const message = inp.value.trim();
+  if (!message) return;
+  inp.value = '';
+  const r = await api('/api/say', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: logTarget.ticket, message }) });
+  if (r.error) { inp.value = message; alert(r.error); }
+  else setTimeout(refreshLog, 500);
+};
 async function refreshLog() {
   const q = logTarget.ticket ? `ticket=${encodeURIComponent(logTarget.ticket)}` : `daemon=${encodeURIComponent(logTarget.daemon)}`;
   const { text } = await api(`/api/log?${q}`);

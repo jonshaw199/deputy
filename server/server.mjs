@@ -109,6 +109,14 @@ const server = createServer(async (req, res) => {
     try { process.kill(Number(tail(join(TMP, `deputy-${project}.pid`)).trim()), 'SIGUSR1'); } catch {}
     return json(res, 200, { ok: true });
   }
+  if (path === '/api/say' && req.method === 'POST') {
+    // Live chat: append a message to a running agent's input channel (it tails it).
+    const { ticket, message } = await readBody(req);
+    if (!ticket || !message) return json(res, 400, { error: 'ticket and message required' });
+    if (!listActive().some((a) => a.ticket === ticket)) return json(res, 400, { error: 'no live agent for that ticket' });
+    appendFileSync(join(TMP, `deputy-input-${ticket}.jsonl`), message + '\n');
+    return json(res, 200, { ok: true });
+  }
 
   // Static
   const file = path === '/' ? 'index.html' : path.slice(1);

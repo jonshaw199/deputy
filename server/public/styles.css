@@ -55,3 +55,6 @@ button:hover { border-color: var(--accent); }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .modal-head button { padding: 2px 8px; }
 #logBody { margin: 0; padding: 14px 16px; overflow: auto; flex: 1; font: 12px/1.5 "SF Mono", Menlo, monospace; white-space: pre-wrap; color: #cfd6e4; }
+.reply { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.reply.hidden { display: none; }
+.reply input { flex: 1; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 8px 12px; font-size: 13px; }
