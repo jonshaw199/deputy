@@ -4,6 +4,7 @@ const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt
 const trunc = (s, n) => { s = String(s || ''); return s.length <= n ? esc(s) : esc(s.slice(0, n).replace(/\s+\S*$/, '')) + '…'; };
 // Sharp pistol silhouette (emoji 🔫 renders as a toy water gun on macOS).
 const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="3" y="7" width="18" height="3.2" rx=".6"/><path d="M7 10l-1.6 6a1 1 0 0 0 1 1.3h2.4a1 1 0 0 0 1-.7L11.6 10z"/><rect x="18.4" y="5.7" width="2.6" height="2" rx=".4"/></svg>';
+const X_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 
 let logTarget = null; // { ticket } or { daemon } currently shown in the modal
 
@@ -36,11 +37,12 @@ function caseRow(c) {
     ? `<div class="sub question">📻 <b>Needs your call:</b> ${trunc(c.question, 220)}</div>`
     : `<div class="sub">${trunc(review ? c.title : c.phase, 180)}</div>`;
 
-  const gun = `<span class="gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: never ask you; auto-handle review comments">${GUN}</span>`;
+  const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: never ask you; auto-handle review comments">${GUN}</span>`;
+  const stop = live ? `<span class="iconbtn danger" data-stop title="Stop: halt the agent (keeps the worktree)">${X_ICON}</span>` : '';
   const row = el('div', c.state === 'needs-input' ? 'case needs-input' : 'case');
   row.innerHTML = `
     <div class="case-head"><span class="dot ${dot}"></span> <b>${esc(c.ticket)}</b> ${chip}
-      <span class="case-actions">${gun}<span class="linklike">💬 open</span>${live ? '<span class="linklike danger" data-stop>stop</span>' : ''}</span></div>
+      <span class="case-actions">${gun}${stop}</span></div>
     ${detail}
     ${links ? `<div class="sub">${links}</div>` : ''}`;
   row.style.cursor = 'pointer';
