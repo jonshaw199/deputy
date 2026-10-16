@@ -44,6 +44,23 @@ function caseRow(c) {
   return row;
 }
 
+// A finished-but-open PR. Shows its unresolved review comments; clicking opens them
+// with a reply box that tells Deputy what to fix (Deputy never replies on the PR itself).
+function prRow(p, project) {
+  const row = el('div', 'case');
+  const n = p.comments?.length || 0;
+  const chip = n ? `<span class="chip">💬 ${n} comment${n > 1 ? 's' : ''}</span>` : '';
+  const label = p.ticket || `PR #${p.number}`;
+  row.innerHTML = `
+    <div class="case-head"><span class="dot ${n ? 'warn' : 'ok'}"></span> <b>${esc(label)}</b> ${chip}
+      <span class="case-actions"><a href="${p.url}" target="_blank">PR</a></span></div>
+    <div class="sub">${trunc(p.title, 140)}</div>`;
+  row.style.cursor = 'pointer';
+  row.onclick = () => openLog({ pr: p, project }, `${label} · review`);
+  row.querySelectorAll('a').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
+  return row;
+}
+
 function renderDeputies(daemons, orphans) {
   const wrap = $('#daemons');
   wrap.innerHTML = '';
@@ -64,14 +81,9 @@ function renderDeputies(daemons, orphans) {
       for (const c of cases) sec.append(caseRow(c));
       card.append(sec);
     }
-    if (d.recent?.length) {
-      const sec = el('div', 'recent'); sec.append(el('div', 'muted', 'Recent cases'));
-      for (const r of d.recent) {
-        const it = el('div', 'item');
-        const pr = r.pr ? ` · <a href="${r.pr}" target="_blank">PR</a>` : '';
-        it.innerHTML = `${badge(r.outcome)} <span>${esc(r.ticket)}</span>${pr}`;
-        sec.append(it);
-      }
+    if (d.prs?.length) {
+      const sec = el('div', 'recent'); sec.append(el('div', 'muted', 'Open PRs (in review)'));
+      for (const p of d.prs) sec.append(prRow(p, d.project));
       card.append(sec);
     }
     const footer = el('div', 'recent actions-row');
@@ -128,24 +140,46 @@ let pendingResume = false;   // answering a parked case: show a "resuming" note 
 
 async function openLog(target, title) {
   logTarget = target;
-  pendingEcho = '';
+  pendingEcho = ''; pendingResume = false;
   $('#logTitle').textContent = title;
-  // Show the reply box only when chatting with a live agent (a ticket, not a poller log).
-  $('#logReply').classList.toggle('hidden', !target.ticket);
+  const canReply = !!(target.ticket || target.pr);
+  $('#logReply').classList.toggle('hidden', !canReply);
   if (target.ticket) $('#replyInput').placeholder = target.needsInput ? 'Answer the deputy…' : 'Reply to this agent…';
+  if (target.pr) $('#replyInput').placeholder = 'Tell Deputy what to fix…';
   $('#logModal').classList.remove('hidden');
-  refreshLog();
   clearInterval(logTimer);
-  logTimer = setInterval(refreshLog, 1000);   // snappy transcript while the chat is open
-  if (target.ticket) $('#replyInput').focus();
+  if (target.pr) { renderPrComments(target.pr); }
+  else { refreshLog(); logTimer = setInterval(refreshLog, 1000); }
+  if (canReply) $('#replyInput').focus();
+}
+function renderPrComments(p) {
+  const cs = p.comments || [];
+  const head = cs.length
+    ? `${cs.length} unresolved review comment${cs.length > 1 ? 's' : ''}. Tell Deputy what to fix below; it edits the code and pushes, and never replies on the PR (that's you).\n\n`
+    : `No unresolved review comments. You can still tell Deputy to do more work on this PR below.\n\n`;
+  const list = cs.map((c) => `@${c.author}  ${c.path}${c.line ? ':' + c.line : ''}\n${c.body}\n${c.url}`).join('\n\n──────────\n\n');
+  $('#logBody').textContent = head + list;
 }
 $('#logReply').onsubmit = async (e) => {
   e.preventDefault();
-  if (!logTarget?.ticket) return;
   const inp = $('#replyInput');
   const btn = e.target.querySelector('button');
   const message = inp.value.trim();
   if (!message) return;
+
+  // A PR entry: dispatch a follow-up on that branch (Deputy works, you stay the only PR voice).
+  if (logTarget?.pr) {
+    const p = logTarget.pr;
+    inp.value = '';
+    btn.disabled = true; const label = btn.textContent; btn.textContent = 'Sending…';
+    const r = await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: logTarget.project, ticket: p.ticket || `PR-${p.number}`, branch: p.branch, prompt: message }) });
+    btn.disabled = false; btn.textContent = label;
+    if (r.error) { inp.value = message; alert(r.error); }
+    else { $('#logBody').textContent += `\n\n[SENT] Deputy is on it; it'll appear under Open cases.`; $('#logBody').scrollTop = $('#logBody').scrollHeight; }
+    return;
+  }
+
+  if (!logTarget?.ticket) return;
   inp.value = '';
   // Optimistic echo: show it instantly, keep showing it until the agent's log catches up.
   pendingEcho = message;
@@ -159,7 +193,7 @@ $('#logReply').onsubmit = async (e) => {
   else { if (r.resumed) pendingResume = true; inp.focus(); refreshLog(); }
 };
 async function refreshLog() {
-  if (!logTarget) return;
+  if (!logTarget || logTarget.pr) return;
   const q = logTarget.ticket ? `ticket=${encodeURIComponent(logTarget.ticket)}` : `daemon=${encodeURIComponent(logTarget.daemon)}`;
   const { text } = await api(`/api/log?${q}`);
   const body = $('#logBody');

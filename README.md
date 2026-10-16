@@ -35,6 +35,11 @@ worktree (or the one you already have open, if you're collaborating).
 - **Fully autonomous loop** — poll → implement → push → draft PR → advance the item.
 - **Fixes its own CI** — watches its PRs; when CI goes red it pulls the failures +
   annotations and pushes a fix automatically.
+- **Surfaces review comments, never replies** — watches its open PRs for unresolved
+  review comments (people or bots) and flags them on the case with a "💬 N" chip and a
+  list (author, `file:line`, link). You tell it what to fix in the reply box; it edits
+  and pushes, and posts nothing on the PR. You stay the only voice there. Finished PRs
+  stay promptable, so you can send more work after a case is "done."
 - **Stops and asks instead of guessing** — when a ticket is ambiguous or needs a
   decision, the deputy parks the case, shows its question ("needs your call"), and
   waits. You answer and it resumes the exact same session (works even after it exits,
@@ -96,6 +101,10 @@ bin/daemon stop-ticket <TICKET>                              # cancel one in-fli
 ## Talking to deputies
 
 ![Chatting with a deputy mid-run](docs/chat.png)
+
+Review comments surface on the case, you tell Deputy what to fix, it never replies on the PR:
+
+![Reviewing a PR's comments](docs/review.png)
 
 - **When a deputy needs your call:** if it hits something it shouldn't decide alone,
   it parks the case and surfaces its question (flagged "needs your call" on the

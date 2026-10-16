@@ -46,6 +46,7 @@ section { margin-bottom: 32px; }
 .case-head .case-actions { margin-left: auto; display: flex; gap: 12px; }
 .danger, .linklike.danger { color: var(--fail); }
 .actions-row { display: flex; gap: 16px; align-items: center; margin-top: 8px; padding-top: 8px; }
+.chip { font-size: 11px; color: var(--warn); border: 1px solid var(--warn); border-radius: 999px; padding: 0 8px; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
 .badge.ok { color: var(--ok); } .badge.fail { color: var(--fail); } .badge.warn { color: var(--warn); }
 

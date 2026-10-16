@@ -19,6 +19,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_BIN="$SCRIPT_DIR/daemon"
 RUNNER_PATH="$PROJECT_ROOT/lib/claude-agent-runner.mjs"
 TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
+PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -46,6 +47,7 @@ DAEMON_LOG_FILE="/tmp/deputy-${PROJECT_NAME}.log"
 DAEMON_META_FILE="/tmp/deputy-${PROJECT_NAME}.meta"
 PROCESSED_FILE="/tmp/deputy-processed-${PROJECT_NAME}.txt"   # CI failures already handled (pr:sha)
 QUEUE_FILE="/tmp/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
+PRS_FILE="/tmp/deputy-prs-${PROJECT_NAME}.json"             # open PRs + unresolved review comments
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
 function kill_tree() {
@@ -151,6 +153,9 @@ function watch_and_process() {
     check_for_ci_failures
     drain_continue_queue
 
+    # Publish open PRs + unresolved review comments for the dashboard (deputy never replies).
+    (cd "$MAIN_PROJECT_DIR" && node "$PR_WATCH" > "$PRS_FILE" 2>/dev/null) || true
+
     # Interruptible sleep: a SIGUSR1 nudge (continue/dashboard) breaks out of this
     # immediately via the trap, instead of waiting out the whole interval.
     sleep "$CHECK_INTERVAL" & wait $! 2>/dev/null
@@ -196,13 +201,16 @@ function run_agent() {
       timeout "$CLAUDE_TIMEOUT_SECONDS" bash -c "$AGENT_CMD" >> "$lf" 2>&1 )
 }
 
-# continue_ticket <ticket_id> <prompt> <cont_id>
+# continue_ticket <ticket_id> <prompt> <cont_id> [branch]
 # Re-enters an existing PR's branch to do follow-up work (CI fix or a local request).
+# Pass [branch] to target a specific PR branch (e.g. a random-named collaboration branch).
 function continue_ticket() {
-  local ticket_id=$1 continuation_prompt=$2 cont_id=$3
+  local ticket_id=$1 continuation_prompt=$2 cont_id=$3 branch_override=$4
   local log_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.log"
   local lock_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.lock"
-  local branch_name; branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]')
+  local branch_name
+  if [ -n "$branch_override" ]; then branch_name="$branch_override"
+  else branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]'); fi
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}_cont_${cont_id}"
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file'" EXIT
@@ -335,11 +343,12 @@ function drain_continue_queue() {
   local line
   while IFS= read -r line; do
     [ -z "$line" ] && continue
-    local ticket prompt cid kind
+    local ticket prompt cid kind branch
     ticket=$(echo "$line" | jq -r '.ticket // empty' 2>/dev/null)
     prompt=$(echo "$line" | jq -r '.prompt // empty' 2>/dev/null)
     cid=$(echo "$line" | jq -r '.id // empty' 2>/dev/null)
     kind=$(echo "$line" | jq -r '.kind // "continue"' 2>/dev/null)
+    branch=$(echo "$line" | jq -r '.branch // empty' 2>/dev/null)
     { [ -z "$ticket" ] || [ -z "$prompt" ]; } && continue
     [ -z "$cid" ] && cid="q$(echo "$line" | cksum | cut -d' ' -f1)"
     if [ "$kind" = "resume" ]; then
@@ -349,7 +358,7 @@ function drain_continue_queue() {
     else
       echo "[$(date)] Local continuation request for $ticket (cont $cid)" >> "$DAEMON_LOG_FILE"
       local clock="/tmp/deputy-item-${ticket}-cont-${cid}.lock"
-      continue_ticket "$ticket" "$prompt" "$cid" & echo $! > "$clock"
+      continue_ticket "$ticket" "$prompt" "$cid" "$branch" & echo $! > "$clock"
     fi
   done < "$tmp"
   rm -f "$tmp"

@@ -60,6 +60,17 @@ On the dashboard, `/api/say` is the single entry point: if the agent is live it
 streams the message into the session; if the case is parked it queues a `resume`
 request instead (daemon drains it on the `SIGUSR1` nudge).
 
+## Review comments on open PRs
+
+Each poll, the daemon runs [`lib/pr-watch.mjs`](lib/pr-watch.mjs) and writes
+`/tmp/deputy-prs-<repo>.json`: the open PRs it labelled, each with its unresolved
+review threads (via `gh` + a GraphQL `reviewThreads` query). The dashboard reads that
+file and shows finished-but-open PRs under "Open PRs", flagging comment counts. Deputy
+never writes on the PR. When you reply from a PR entry, the dashboard posts to
+`/api/continue` with the PR's `branch`, so `continue_ticket` works on the real branch
+(including random-named collaboration branches, via the new branch arg) and pushes
+there. You handle the thread replies/resolves yourself.
+
 ## Collaborating in your worktree
 
 Before making its own throwaway worktree, `process_ticket` calls

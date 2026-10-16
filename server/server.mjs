@@ -97,6 +97,10 @@ export function makeServer(opts = {}) {
         return { ticket, project, phase: question, question, pr: prUrlIn(log), item: itemUrlIn(log), needsInput: true };
       });
   }
+  // Open PRs + unresolved review comments the daemon published (deputy never replies).
+  const readPrs = (project) => {
+    try { return JSON.parse(readFileSync(join(TMP, `deputy-prs-${project}.json`), 'utf8')); } catch { return []; }
+  };
   const liveOrPaused = () => {
     const paused = listPaused();
     const pausedIds = new Set(paused.map((p) => p.ticket));
@@ -118,7 +122,12 @@ export function makeServer(opts = {}) {
     if (path === '/api/status') {
       const daemons = listDaemons();
       const cases = liveOrPaused();
-      for (const d of daemons) d.cases = cases.filter((a) => a.project === d.project);
+      const activeTickets = new Set(cases.map((a) => a.ticket));
+      for (const d of daemons) {
+        d.cases = cases.filter((a) => a.project === d.project);
+        // Done-but-open PRs = watched PRs whose ticket isn't a live/parked case right now.
+        d.prs = readPrs(d.project).filter((p) => !p.ticket || !activeTickets.has(p.ticket));
+      }
       const orphans = cases.filter((a) => !daemons.some((d) => d.project === a.project));
       return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
     }
@@ -141,10 +150,10 @@ export function makeServer(opts = {}) {
       return json(res, 200, await runDaemon(repo, 'start'));
     }
     if (path === '/api/continue' && req.method === 'POST') {
-      const { project, ticket, prompt } = await readBody(req);
+      const { project, ticket, prompt, branch } = await readBody(req);
       if (!listDaemons().some((d) => d.project === project)) return json(res, 400, { error: 'unknown daemon' });
       if (!ticket || !prompt) return json(res, 400, { error: 'ticket and prompt required' });
-      const line = JSON.stringify({ ticket, prompt, id: `web-${ticket}-${Date.now()}` });
+      const line = JSON.stringify({ ticket, prompt, branch, id: `web-${ticket}-${Date.now()}` });
       appendFileSync(join(TMP, `deputy-queue-${project}.jsonl`), line + '\n');
       // Nudge the daemon to drain the queue now instead of waiting for the poll.
       try { process.kill(Number(tail(join(TMP, `deputy-${project}.pid`)).trim()), 'SIGUSR1'); } catch {}
