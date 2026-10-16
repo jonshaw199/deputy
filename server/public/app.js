@@ -213,7 +213,12 @@ $('#logReply').onsubmit = async (e) => {
   else { if (r.resumed) pendingResume = true; inp.focus(); refreshLog(); }
 };
 // Fix every unresolved comment with no typing: dispatch with just the comment list.
-$('#addressAll').onclick = () => { $('#replyInput').value = ''; $('#logReply').requestSubmit(); };
+$('#addressAll').onclick = () => {
+  const n = (logTarget?.pr?.comments || []).length;
+  if (!confirm(`Have Deputy address ${n} review comment${n === 1 ? '' : 's'} on this PR? It will edit the code and push a fix.`)) return;
+  $('#replyInput').value = '';
+  $('#logReply').requestSubmit();
+};
 // "I don't feel like answering" — resume the parked agent and let it decide for itself.
 $('#letDecide').onclick = async () => {
   if (!logTarget?.needsInput) return;
