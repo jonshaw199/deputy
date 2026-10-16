@@ -49,6 +49,9 @@ section { margin-bottom: 32px; }
 /* Blocked case: muted, non-pulsing — it's waiting, not working. */
 .case .blocked-note { color: var(--muted); margin-top: 5px; }
 .case .blocked-note b { color: #aab2c0; }
+/* Failed case: red-tinted so it can't be missed. */
+.case .failed-note { color: var(--text); margin-top: 5px; padding: 6px 10px; border-left: 3px solid var(--fail); background: rgba(248,81,73,.08); border-radius: 6px; }
+.case .failed-note b { color: var(--fail); }
 .case-head { display: flex; align-items: center; gap: 8px; }
 .case-head b { font-size: 14px; }
 .case-head .case-actions { margin-left: auto; display: flex; gap: 12px; }

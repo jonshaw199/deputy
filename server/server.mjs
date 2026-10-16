@@ -127,6 +127,20 @@ export function makeServer(opts = {}) {
         return { ticket, project, state: 'blocked', phase: reason, item: itemUrlIn(log) };
       });
   }
+  // Cases that ended without producing a PR (push failed, timed out, agent errored). The
+  // worktree is kept; the case stays visible with the error until dismissed or restarted.
+  function listFailed() {
+    return readdirSync(TMP)
+      .map((f) => f.match(/^deputy-failed-(.+)\.meta$/))
+      .filter(Boolean)
+      .map((m) => {
+        const ticket = m[1];
+        const reason = tail(join(TMP, `deputy-failed-${ticket}.txt`)).trim() || 'the run failed';
+        const log = tail(join(TMP, `deputy-item-${ticket}.log`), Infinity);
+        const project = tail(join(TMP, `deputy-failed-${ticket}.meta`)).trim() || null;
+        return { ticket, project, state: 'failed', phase: reason, item: itemUrlIn(log), pr: prUrlIn(log) };
+      });
+  }
   // Open PRs + unresolved review comments the daemon published (deputy never replies).
   const readPrs = (project) => {
     try { return JSON.parse(readFileSync(join(TMP, `deputy-prs-${project}.json`), 'utf8')); } catch { return []; }
@@ -149,10 +163,11 @@ export function makeServer(opts = {}) {
   // Fold live agents and open PRs into one case per ticket. A ticket with a live
   // agent is working / needs-input (and keeps its PR + comments if it has one); a
   // ticket with only an open PR is in-review. Live cases first, then in-review.
-  function mergeCases(live, prs, blocked, project) {
+  function mergeCases(live, prs, blocked, failed, project) {
     const byTicket = new Map();
     for (const a of live) byTicket.set(a.ticket, { ...a, state: a.needsInput ? 'needs-input' : 'working' });
     for (const b of blocked) if (!byTicket.has(b.ticket)) byTicket.set(b.ticket, b);
+    for (const f of failed) if (!byTicket.has(f.ticket)) byTicket.set(f.ticket, f);
     for (const p of prs) {
       const key = p.ticket || `PR-${p.number}`;
       const ex = byTicket.get(p.ticket);
@@ -180,9 +195,10 @@ export function makeServer(opts = {}) {
       const daemons = listDaemons();
       const live = liveOrPaused();
       const blocked = listBlocked();
+      const failed = listFailed();
       // One case per ticket: a live agent (working / needs-input), a dependency-blocked
-      // case waiting to start, and its open PR (in-review) are the same ticket, merged here.
-      for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), blocked.filter((b) => b.project === d.project), d.project);
+      // case waiting to start, a failed run, and its open PR (in-review) all merge here.
+      for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), blocked.filter((b) => b.project === d.project), failed.filter((f) => f.project === d.project), d.project);
       const orphans = live.filter((a) => !daemons.some((d) => d.project === a.project))
         .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working', auto: isAuto(a.ticket) }));
       return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });

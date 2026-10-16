@@ -568,6 +568,30 @@ function resolve_base_ref() {
   else echo "WAIT|waiting on $open_count unmerged dependencies"; fi
 }
 
+# recover_pr <ticket> <branch> <log_file> [stack_branch]
+# Self-correct when the agent did the work (created the branch + commits) but couldn't push
+# (e.g. a sandbox network blip). The daemon's git/gh run OUTSIDE the agent sandbox, so they're
+# reliable. Pushes the branch and opens the draft PR. Returns 0 on success, 1 if nothing to do.
+function recover_pr() {
+  local ticket_id=$1 branch=$2 log_file=$3 stack_branch=$4
+  cd "$MAIN_PROJECT_DIR" || return 1
+  git show-ref --verify --quiet "refs/heads/$branch" || { echo "[$(date)] recover: no local branch $branch to push" >> "$log_file"; return 1; }
+  echo "[$(date)] recover: pushing $branch + opening PR from the daemon (agent couldn't)" >> "$log_file"
+  git push -u origin "$branch" >> "$log_file" 2>&1 || { echo "[$(date)] recover: push failed" >> "$log_file"; return 1; }
+  local title; title=$(git log -1 --format=%s "$branch" 2>/dev/null); [ -z "$title" ] && title="$ticket_id"
+  local pr_ref; pr_ref=$(node "$TRACKER_CLI" ref "$ticket_id" 2>/dev/null)
+  local url
+  if [ -n "$stack_branch" ]; then
+    url=$(gh pr create --draft --label "$PR_LABEL" --base "$stack_branch" --head "$branch" --title "$title" --body "${pr_ref:-Automated by Deputy.}" 2>>"$log_file")
+  else
+    url=$(gh pr create --draft --label "$PR_LABEL" --head "$branch" --title "$title" --body "${pr_ref:-Automated by Deputy.}" 2>>"$log_file")
+  fi
+  [ -z "$url" ] && url=$(gh pr view "$branch" --json url --jq .url 2>/dev/null)
+  [ -z "$url" ] && { echo "[$(date)] recover: PR create failed" >> "$log_file"; return 1; }
+  echo "[$(date)] recover: opened $url" >> "$log_file"   # logged so PR-url detection + stack-file see it
+  return 0
+}
+
 function process_ticket() {
   local ticket_id=$1
   local log_file="/tmp/deputy-item-${ticket_id}.log"
@@ -605,7 +629,8 @@ function process_ticket() {
 
   : > "$input_file"
   echo "$PROJECT_NAME" > "$meta_file"
-  rm -f "$ask_file" "$session_file" "/tmp/deputy-paused-${ticket_id}.meta"
+  rm -f "$ask_file" "$session_file" "/tmp/deputy-paused-${ticket_id}.meta" \
+        "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt"  # clear a prior failure on (re)start
   [ -f "/tmp/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1  # full-auto: never park to ask
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
@@ -748,13 +773,34 @@ Work autonomously. When done, report the PR URL."
     return 0
   fi
 
-  if [ $exit_code -eq 124 ]; then
-    echo "[$(date)] TIMEOUT: $ticket_id" >> "$DAEMON_LOG_FILE"
-  elif [ $exit_code -ne 0 ]; then
-    echo "[$(date)] FAILED: $ticket_id (exit $exit_code)" >> "$DAEMON_LOG_FILE"
-  else
-    echo "[$(date)] SUCCESS: $ticket_id" >> "$DAEMON_LOG_FILE"
+  # A run only "succeeded" if it actually produced a PR (fresh-PR runs must open one;
+  # collab runs push to an existing PR). No PR = failure, even on a clean exit — we must
+  # NEVER call a run success, discard the worktree, and let the case vanish silently.
+  local made_pr=0
+  grep -qiE 'github\.com/[^ ]+/pull/[0-9]+' "$log_file" && made_pr=1
+
+  # Self-correct: if the agent finished the code but never got a PR up, the daemon pushes the
+  # branch + opens the PR itself (it runs outside the agent's sandbox, so the push is reliable).
+  if [ "$collaborating" -eq 0 ] && [ "$made_pr" -eq 0 ]; then
+    if recover_pr "$ticket_id" "$branch_name" "$log_file" "$stack_branch"; then made_pr=1; fi
   fi
+
+  local failed=0 reason=""
+  if [ $exit_code -eq 124 ] && [ "$made_pr" -eq 0 ]; then failed=1; reason="timed out after ${timeout_mins} min"
+  elif [ $exit_code -ne 0 ] && [ "$made_pr" -eq 0 ]; then failed=1; reason="agent exited with code $exit_code and left no PR to recover"
+  elif [ "$collaborating" -eq 0 ] && [ "$made_pr" -eq 0 ]; then failed=1; reason="finished with no PR and no branch to recover"
+  fi
+
+  if [ "$failed" -eq 1 ]; then
+    echo "[$(date)] FAILED: $ticket_id ($reason)" >> "$DAEMON_LOG_FILE"
+    echo "$PROJECT_NAME" > "/tmp/deputy-failed-${ticket_id}.meta"
+    { echo "$reason"; grep -iE 'fatal:|^\[ERROR\]|CONNECT tunnel|Stream closed|rejected|permission denied|error_max_turns|not allowed' "$log_file" | tail -3; } > "/tmp/deputy-failed-${ticket_id}.txt"
+    echo "[$(date)] Marked FAILED ($reason). Worktree kept at $ticket_worktree so no work is lost; restart the case to retry." >> "$log_file"
+    trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"   # keep the worktree
+    return 0
+  fi
+
+  echo "[$(date)] SUCCESS: $ticket_id" >> "$DAEMON_LOG_FILE"
 
   # Record a stacked PR so maintain_stacks keeps it rebased as the parent moves/merges.
   if [ -n "$stack_branch" ] && grep -qiE 'github\.com/[^ ]+/pull/[0-9]+' "$log_file"; then
@@ -844,10 +890,11 @@ function stop_ticket() {
     rm -f "$lf" "${lf%.lock}.meta"
   done
 
-  # Clear any parked-for-input, blocked, or stack-tracking state too.
+  # Clear any parked-for-input, blocked, failed, or stack-tracking state too.
   for f in "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-session-${ticket_id}.txt" \
            "/tmp/deputy-paused-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.meta" \
-           "/tmp/deputy-blocked-${ticket_id}.txt" "/tmp/deputy-stack-${ticket_id}.json"; do
+           "/tmp/deputy-blocked-${ticket_id}.txt" "/tmp/deputy-stack-${ticket_id}.json" \
+           "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt"; do
     [ -f "$f" ] && { rm -f "$f"; killed=1; }
   done
 
