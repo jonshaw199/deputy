@@ -37,7 +37,7 @@ function caseRow(c) {
     ? `<div class="sub question">📻 <b>Needs your call:</b> ${trunc(c.question, 220)}</div>`
     : `<div class="sub">${trunc(review ? c.title : c.phase, 180)}</div>`;
 
-  const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: never ask you; auto-handle review comments">${GUN}</span>`;
+  const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: don't ask me questions, just decide and keep going">${GUN}</span>`;
   const stop = live ? `<span class="iconbtn danger" data-stop title="Stop: halt the agent (keeps the worktree)">${X_ICON}</span>` : '';
   const row = el('div', c.state === 'needs-input' ? 'case needs-input' : 'case');
   row.innerHTML = `

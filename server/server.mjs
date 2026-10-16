@@ -186,12 +186,12 @@ export function makeServer(opts = {}) {
       return json(res, 200, await runDaemon(cwd, 'stop-ticket', ticket));
     }
     if (path === '/api/auto' && req.method === 'POST') {
-      // Toggle full-auto for a ticket: never ask, auto-handle review comments.
+      // Toggle full-auto for a ticket: the agent decides for itself instead of parking to ask.
       const { ticket, on } = await readBody(req);
       if (!ticket) return json(res, 400, { error: 'ticket required' });
       const marker = join(TMP, `deputy-auto-${ticket}`);
       if (on) writeFileSync(marker, '1');
-      else { try { unlinkSync(marker); } catch {} try { unlinkSync(join(TMP, `deputy-auto-handled-${ticket}`)); } catch {} }
+      else try { unlinkSync(marker); } catch {}
       return json(res, 200, { ok: true, auto: !!on });
     }
     if (path === '/api/say' && req.method === 'POST') {

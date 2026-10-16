@@ -20,7 +20,6 @@ DAEMON_BIN="$SCRIPT_DIR/daemon"
 RUNNER_PATH="$PROJECT_ROOT/lib/claude-agent-runner.mjs"
 TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
 PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
-AUTO_DISPATCH="$PROJECT_ROOT/lib/auto-dispatch.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -155,10 +154,8 @@ function watch_and_process() {
 
     # Publish open PRs + unresolved review comments for the dashboard (deputy never replies).
     (cd "$MAIN_PROJECT_DIR" && node "$PR_WATCH" > "$PRS_FILE" 2>/dev/null) || true
-    # Full-auto cases: auto-queue "address all" for any new review comments.
-    node "$AUTO_DISPATCH" "$PROJECT_NAME" >> "$DAEMON_LOG_FILE" 2>/dev/null || true
 
-    # Run any queued "do X next" / resume / auto requests.
+    # Run any queued "do X next" / resume requests.
     drain_continue_queue
 
     # Interruptible sleep: a SIGUSR1 nudge (continue/dashboard) breaks out of this
