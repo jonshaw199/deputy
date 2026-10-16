@@ -78,4 +78,4 @@ button:hover { border-color: var(--accent); }
 .reply input { flex: 1; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 8px 12px; font-size: 13px; }
 .ghost { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 7px; padding: 8px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .ghost:hover { border-color: var(--accent); color: var(--text); }
-#letDecide.hidden { display: none; }
+.ghost.hidden { display: none; }

@@ -32,16 +32,20 @@ function caseRow(c) {
     c.pr ? `<a href="${c.pr}" target="_blank">PR</a>` : '',
   ].filter(Boolean).join(' · ');
 
-  const dot = c.state === 'needs-input' ? 'warn' : review ? (n ? 'warn' : 'ok') : 'busy';
+  // One colour per state: blue = working, amber = needs your call, green = in review.
+  const dot = c.state === 'needs-input' ? 'warn' : review ? 'ok' : 'busy';
+  const dotTitle = c.state === 'needs-input' ? 'Needs your call' : review ? 'In review' : 'Working';
   const detail = c.state === 'needs-input'
     ? `<div class="sub question">📻 <b>Needs your call:</b> ${trunc(c.question, 220)}</div>`
     : `<div class="sub">${trunc(review ? c.title : c.phase, 180)}</div>`;
 
   const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: don't ask me questions, just decide and keep going">${GUN}</span>`;
-  const stop = live ? `<span class="iconbtn danger" data-stop title="Stop: halt the agent (keeps the worktree)">${X_ICON}</span>` : '';
+  // ✕ on every case: stops a live agent, or dismisses a finished in-review case from the board.
+  const xTitle = live ? 'Stop: halt the agent (keeps the worktree)' : 'Hide this finished case (comes back only if a new review comment lands)';
+  const stop = `<span class="iconbtn danger" data-x title="${xTitle}">${X_ICON}</span>`;
   const row = el('div', c.state === 'needs-input' ? 'case needs-input' : 'case');
   row.innerHTML = `
-    <div class="case-head"><span class="dot ${dot}"></span> <b>${esc(c.ticket)}</b> ${chip}
+    <div class="case-head"><span class="dot ${dot}" title="${dotTitle}"></span> <b>${esc(c.ticket)}</b> ${chip}
       <span class="case-actions">${gun}${stop}</span></div>
     ${detail}
     ${links ? `<div class="sub">${links}</div>` : ''}`;
@@ -54,10 +58,15 @@ function caseRow(c) {
   row.onclick = review
     ? () => openLog({ pr: { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] }, project: c.project }, `${c.ticket} · review`)
     : () => openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input' }, `${c.ticket} · case log`);
-  if (live) row.querySelector('[data-stop]').onclick = async (e) => {
+  row.querySelector('[data-x]').onclick = async (e) => {
     e.stopPropagation();
-    if (!confirm(`Stop ${c.ticket}? (halts the agent; keeps the worktree)`)) return;
-    await api('/api/stop-case', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket }) });
+    if (review) {
+      if (!confirm(`Hide ${c.ticket}? It's in review with nothing to do; it'll reappear only if a new review comment lands.`)) return;
+      await api('/api/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, commentUrls: (c.comments || []).map((x) => x.url) }) });
+    } else {
+      if (!confirm(`Stop ${c.ticket}? (halts the agent; keeps the worktree)`)) return;
+      await api('/api/stop-case', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket }) });
+    }
     refresh();
   };
   row.querySelectorAll('a').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));

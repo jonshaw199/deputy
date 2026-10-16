@@ -6,30 +6,30 @@ import { join } from 'node:path';
 import { makeServer } from '../server/server.mjs';
 
 let dir, server, base;
-const ALLOWED_REPO = '/repos/icc_app';
+const ALLOWED_REPO = '/repos/webapp';
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'deputy-state-'));
-  // A running deputy for icc_app...
-  writeFileSync(join(dir, 'deputy-icc_app.pid'), String(process.pid)); // live pid → running
-  writeFileSync(join(dir, 'deputy-icc_app.log'), '[2026-01-01] SUCCESS: SAAS-99\n');
-  writeFileSync(join(dir, 'deputy-icc_app.meta'), ALLOWED_REPO);
+  // A running deputy for webapp...
+  writeFileSync(join(dir, 'deputy-webapp.pid'), String(process.pid)); // live pid → running
+  writeFileSync(join(dir, 'deputy-webapp.log'), '[2026-01-01] SUCCESS: WEB-99\n');
+  writeFileSync(join(dir, 'deputy-webapp.meta'), ALLOWED_REPO);
   // ...with one open case.
   writeFileSync(join(dir, 'deputy-item-DEMO-1.lock'), String(process.pid));
   writeFileSync(join(dir, 'deputy-item-DEMO-1.log'), '[ASSISTANT] working on it\nITEM_URL: https://acme.atlassian.net/browse/DEMO-1\n');
-  writeFileSync(join(dir, 'deputy-item-DEMO-1.meta'), 'icc_app');
+  writeFileSync(join(dir, 'deputy-item-DEMO-1.meta'), 'webapp');
   writeFileSync(join(dir, 'deputy-input-DEMO-1.jsonl'), '');
   // A second deputy (dead pid) hosting a case parked on a question.
-  writeFileSync(join(dir, 'deputy-atlas.pid'), '2147483646'); // not alive
-  writeFileSync(join(dir, 'deputy-atlas.meta'), '/repos/atlas');
+  writeFileSync(join(dir, 'deputy-api.pid'), '2147483646'); // not alive
+  writeFileSync(join(dir, 'deputy-api.meta'), '/repos/api');
   writeFileSync(join(dir, 'deputy-ask-DEMO-2.txt'), 'Muted illustration or a text prompt for the empty state?');
-  writeFileSync(join(dir, 'deputy-paused-DEMO-2.meta'), 'atlas');
+  writeFileSync(join(dir, 'deputy-paused-DEMO-2.meta'), 'api');
   writeFileSync(join(dir, 'deputy-session-DEMO-2.txt'), 'sess-xyz');
   writeFileSync(join(dir, 'deputy-item-DEMO-2.log'), '[NEEDS-INPUT] Muted illustration or a text prompt for the empty state?\n');
   // Open PRs the daemon published: one in review with comments, one whose ticket is a live case.
-  writeFileSync(join(dir, 'deputy-prs-icc_app.json'), JSON.stringify([
-    { number: 482, title: 'feat: empty state [SAAS-290]', url: 'https://x/pull/482', branch: 'jon/saas-290', ticket: 'SAAS-290', comments: [{ author: 'maria', path: 'a.ts', line: 44, body: 'debounce this', url: 'https://x/482#r1' }] },
-    { number: 9, title: 'wip [DEMO-1]', url: 'https://x/pull/9', branch: 'jon/demo-1', ticket: 'DEMO-1', comments: [] },
+  writeFileSync(join(dir, 'deputy-prs-webapp.json'), JSON.stringify([
+    { number: 482, title: 'feat: empty state [WEB-290]', url: 'https://x/pull/482', branch: 'dev/web-290', ticket: 'WEB-290', comments: [{ author: 'alex', path: 'a.ts', line: 44, body: 'debounce this', url: 'https://x/482#r1' }] },
+    { number: 9, title: 'wip [DEMO-1]', url: 'https://x/pull/9', branch: 'dev/demo-1', ticket: 'DEMO-1', comments: [] },
   ]));
 
   server = makeServer({ tmp: dir, repos: [ALLOWED_REPO], siteUrl: 'https://acme.atlassian.net', fileEnv: {} });
@@ -45,7 +45,7 @@ test('GET /api/status nests the open case under its deputy and echoes config', a
   const s = await (await get('/api/status')).json();
   assert.equal(s.siteUrl, 'https://acme.atlassian.net');
   assert.deepEqual(s.repos, [ALLOWED_REPO]);
-  const d = s.daemons.find((x) => x.project === 'icc_app');
+  const d = s.daemons.find((x) => x.project === 'webapp');
   assert.ok(d.running);
   assert.equal(d.repoDir, ALLOWED_REPO);
   const demo1 = d.cases.find((c) => c.ticket === 'DEMO-1');
@@ -56,9 +56,9 @@ test('GET /api/status nests the open case under its deputy and echoes config', a
 
 test('GET /api/status surfaces a parked case as needsInput with its question', async () => {
   const s = await (await get('/api/status')).json();
-  const atlas = s.daemons.find((x) => x.project === 'atlas');
-  assert.equal(atlas.cases.length, 1);
-  const c = atlas.cases[0];
+  const api = s.daemons.find((x) => x.project === 'api');
+  assert.equal(api.cases.length, 1);
+  const c = api.cases[0];
   assert.equal(c.ticket, 'DEMO-2');
   assert.equal(c.needsInput, true);
   assert.match(c.question, /Muted illustration/);
@@ -68,7 +68,7 @@ test('POST /api/say resumes a parked case: queues a resume request, not a chat l
   const r = await post('/api/say', { ticket: 'DEMO-2', message: 'use the muted illustration' });
   assert.equal(r.status, 200);
   assert.equal((await r.json()).resumed, true);
-  const queued = readFileSync(join(dir, 'deputy-queue-atlas.jsonl'), 'utf8').trim();
+  const queued = readFileSync(join(dir, 'deputy-queue-api.jsonl'), 'utf8').trim();
   const entry = JSON.parse(queued);
   assert.equal(entry.kind, 'resume');
   assert.equal(entry.ticket, 'DEMO-2');
@@ -77,26 +77,26 @@ test('POST /api/say resumes a parked case: queues a resume request, not a chat l
 
 test('GET /api/status folds a ticket PR into its live case and adds PR-only tickets as in-review', async () => {
   const s = await (await get('/api/status')).json();
-  const icc = s.daemons.find((x) => x.project === 'icc_app');
+  const icc = s.daemons.find((x) => x.project === 'webapp');
   // DEMO-1's PR merges into the live DEMO-1 case (no duplicate row).
   const demo1 = icc.cases.filter((c) => c.ticket === 'DEMO-1');
   assert.equal(demo1.length, 1);
   assert.equal(demo1[0].state, 'working');
   assert.equal(demo1[0].pr, 'https://x/pull/9');
-  // SAAS-290 has no live agent, so it's an in-review case carrying its comments.
-  const saas = icc.cases.find((c) => c.ticket === 'SAAS-290');
-  assert.equal(saas.state, 'in-review');
-  assert.equal(saas.comments.length, 1);
-  assert.equal(saas.branch, 'jon/saas-290');
+  // WEB-290 has no live agent, so it's an in-review case carrying its comments.
+  const web = icc.cases.find((c) => c.ticket === 'WEB-290');
+  assert.equal(web.state, 'in-review');
+  assert.equal(web.comments.length, 1);
+  assert.equal(web.branch, 'dev/web-290');
 });
 
 test('POST /api/continue queues a follow-up carrying the PR branch', async () => {
-  const r = await post('/api/continue', { project: 'atlas', ticket: 'SAAS-290', branch: 'jon/saas-290', prompt: 'address the debounce comment' });
+  const r = await post('/api/continue', { project: 'api', ticket: 'WEB-290', branch: 'dev/web-290', prompt: 'address the debounce comment' });
   assert.equal(r.status, 200);
-  const lines = readFileSync(join(dir, 'deputy-queue-atlas.jsonl'), 'utf8').trim().split('\n');
+  const lines = readFileSync(join(dir, 'deputy-queue-api.jsonl'), 'utf8').trim().split('\n');
   const entry = JSON.parse(lines[lines.length - 1]);
-  assert.equal(entry.branch, 'jon/saas-290');
-  assert.equal(entry.ticket, 'SAAS-290');
+  assert.equal(entry.branch, 'dev/web-290');
+  assert.equal(entry.ticket, 'WEB-290');
   assert.equal(entry.prompt, 'address the debounce comment');
 });
 

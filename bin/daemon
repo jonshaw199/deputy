@@ -23,7 +23,7 @@ PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
-# How work gets done, kept portable (nothing Claude/Ruby/Ontra-specific is hardcoded):
+# How work gets done, kept portable (nothing Claude/Ruby/company-specific is hardcoded):
 #   DEPUTY_AGENT_CMD     - command run in each worktree; reads the task from $DEPUTY_PROMPT
 #   DEPUTY_WORKTREE_SETUP- command run in each fresh worktree (deps install etc.); may be empty
 #   DEPUTY_SYMLINK_FILES - gitignored files to symlink from the main repo into each worktree

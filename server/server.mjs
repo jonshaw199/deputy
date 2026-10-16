@@ -104,6 +104,13 @@ export function makeServer(opts = {}) {
   };
   // Full-auto marker: this ticket never parks to ask, and auto-handles review comments.
   const isAuto = (ticket) => existsSync(join(TMP, `deputy-auto-${ticket}`));
+  // Dismissed in-review case: hidden until a review comment not in the snapshot shows up.
+  const isDismissed = (ticket, comments) => {
+    try {
+      const snap = new Set(JSON.parse(readFileSync(join(TMP, `deputy-hidden-${ticket}`), 'utf8')).urls || []);
+      return (comments || []).every((c) => snap.has(c.url));
+    } catch { return false; }
+  };
   const liveOrPaused = () => {
     const paused = listPaused();
     const pausedIds = new Set(paused.map((p) => p.ticket));
@@ -122,7 +129,9 @@ export function makeServer(opts = {}) {
       if (ex) { ex.pr = p.url; ex.branch = p.branch; ex.comments = p.comments; ex.prNumber = p.number; if (!ex.item) ex.item = p.item; }
       else byTicket.set(key, { ticket: key, project, state: 'in-review', title: p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item });
     }
-    return [...byTicket.values()].map((c) => ({ ...c, auto: isAuto(c.ticket) }));
+    return [...byTicket.values()]
+      .filter((c) => !(c.state === 'in-review' && isDismissed(c.ticket, c.comments)))
+      .map((c) => ({ ...c, auto: isAuto(c.ticket) }));
   }
 
   const json = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -184,6 +193,13 @@ export function makeServer(opts = {}) {
       const cwd = (daemons.find((d) => d.project === c?.project) || daemons.find((d) => d.repoDir))?.repoDir;
       if (!cwd) return json(res, 400, { error: 'no repo for that case' });
       return json(res, 200, await runDaemon(cwd, 'stop-ticket', ticket));
+    }
+    if (path === '/api/dismiss' && req.method === 'POST') {
+      // Hide a finished in-review case; it reappears only if a new (non-snapshot) comment lands.
+      const { ticket, commentUrls } = await readBody(req);
+      if (!ticket) return json(res, 400, { error: 'ticket required' });
+      writeFileSync(join(TMP, `deputy-hidden-${ticket}`), JSON.stringify({ urls: commentUrls || [] }));
+      return json(res, 200, { ok: true });
     }
     if (path === '/api/auto' && req.method === 'POST') {
       // Toggle full-auto for a ticket: the agent decides for itself instead of parking to ask.

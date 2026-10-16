@@ -29,7 +29,7 @@ test('prUrlIn finds the last PR url and is null when absent', () => {
 });
 
 test('itemUrlIn extracts an ITEM_URL marker and is null when absent', () => {
-  assert.equal(itemUrlIn('x\nITEM_URL: https://acme.atlassian.net/browse/SAAS-1\n'), 'https://acme.atlassian.net/browse/SAAS-1');
+  assert.equal(itemUrlIn('x\nITEM_URL: https://acme.atlassian.net/browse/WEB-1\n'), 'https://acme.atlassian.net/browse/WEB-1');
   assert.equal(itemUrlIn('nothing'), null);
 });
 

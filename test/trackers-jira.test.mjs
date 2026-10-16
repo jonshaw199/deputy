@@ -32,15 +32,15 @@ test('listReady queries by label only (no status clause) and maps issues', async
   stub((url, opts) => {
     assert.ok(url.endsWith('/search/jql'));
     assert.equal(JSON.parse(opts.body).jql, 'labels = "ai-ready"');
-    return { body: { issues: [{ key: 'SAAS-1', fields: { summary: 'Fix the thing' } }] } };
+    return { body: { issues: [{ key: 'WEB-1', fields: { summary: 'Fix the thing' } }] } };
   });
-  assert.deepEqual(await jira.listReady(), [{ id: 'SAAS-1', title: 'Fix the thing' }]);
+  assert.deepEqual(await jira.listReady(), [{ id: 'WEB-1', title: 'Fix the thing' }]);
 });
 
 test('listReady adds a project filter when DEPUTY_PROJECTS is set', async () => {
-  process.env.DEPUTY_PROJECTS = 'SAAS';
+  process.env.DEPUTY_PROJECTS = 'WEB';
   stub((url, opts) => {
-    assert.equal(JSON.parse(opts.body).jql, 'labels = "ai-ready" AND project IN (SAAS)');
+    assert.equal(JSON.parse(opts.body).jql, 'labels = "ai-ready" AND project IN (WEB)');
     return { body: { issues: [] } };
   });
   await jira.listReady();
@@ -60,12 +60,12 @@ test('listReady throws on Jira errorMessages', async () => {
 test('markStarted removes the label first, then transitions to the start status', async () => {
   stub((url, opts) => {
     const m = opts.method || 'GET';
-    if (m === 'PUT' && /\/issue\/SAAS-1$/.test(url)) return { status: 204, body: '' };
-    if (m === 'GET' && /\/issue\/SAAS-1\/transitions$/.test(url)) return { body: { transitions: [{ id: '31', name: 'In Progress' }] } };
-    if (m === 'POST' && /\/issue\/SAAS-1\/transitions$/.test(url)) return { status: 204, body: '' };
+    if (m === 'PUT' && /\/issue\/WEB-1$/.test(url)) return { status: 204, body: '' };
+    if (m === 'GET' && /\/issue\/WEB-1\/transitions$/.test(url)) return { body: { transitions: [{ id: '31', name: 'In Progress' }] } };
+    if (m === 'POST' && /\/issue\/WEB-1\/transitions$/.test(url)) return { status: 204, body: '' };
     throw new Error(`unexpected ${m} ${url}`);
   });
-  await jira.markStarted('SAAS-1');
+  await jira.markStarted('WEB-1');
 
   const put = calls.find((c) => c.method === 'PUT');
   assert.deepEqual(JSON.parse(put.body), { update: { labels: [{ remove: 'ai-ready' }] } });
@@ -80,7 +80,7 @@ test('markStarted still succeeds when the status transition is unavailable', asy
     if (m === 'GET') return { body: { transitions: [] } }; // no matching transition
     throw new Error(`unexpected ${m} ${url}`);
   });
-  await assert.doesNotReject(() => jira.markStarted('SAAS-1'));
+  await assert.doesNotReject(() => jira.markStarted('WEB-1'));
   assert.ok(calls.some((c) => c.method === 'PUT'), 'label removal still happened');
 });
 
@@ -91,10 +91,10 @@ test('markDone transitions to the done status and returns its name', async () =>
     if (m === 'POST') return { status: 204, body: '' };
     throw new Error(`unexpected ${m} ${url}`);
   });
-  assert.equal(await jira.markDone('SAAS-1'), 'In Review');
+  assert.equal(await jira.markDone('WEB-1'), 'In Review');
 });
 
 test('itemUrl and prRef build browse links from the site URL', () => {
-  assert.equal(jira.itemUrl('SAAS-7'), 'https://acme.atlassian.net/browse/SAAS-7');
-  assert.equal(jira.prRef('SAAS-7'), 'Jira: https://acme.atlassian.net/browse/SAAS-7');
+  assert.equal(jira.itemUrl('WEB-7'), 'https://acme.atlassian.net/browse/WEB-7');
+  assert.equal(jira.prRef('WEB-7'), 'Jira: https://acme.atlassian.net/browse/WEB-7');
 });

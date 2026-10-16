@@ -44,11 +44,14 @@ worktree (or the one you already have open, if you're collaborating).
   decision, the deputy parks the case, shows its question ("needs your call"), and
   waits. You answer and it resumes the exact same session (works even after it exits,
   so long waits and reboots are fine). Not every ticket is one-shot, and that's OK.
+- **Full-auto when you don't want to be asked** — flip the 🔫 toggle on any case and
+  the deputy stops parking for questions; it makes a sensible, reversible decision and
+  keeps going. Per-case, off by default.
 - **Chat with any deputy live** — open a case and talk to the agent mid-run; it keeps
-  full context (💬 case log). Or `deputy continue <TICKET> "…"`. No PR/Jira comments.
+  full context. Or answer its question (or "let it decide"). No PR/Jira comments.
 - **Picks up work you started** — if you already have the ticket's branch open in a
   worktree, the deputy finds it (via the ticket's PR) and works in *your* worktree on
-  *your* branch, pushing to the same PR, instead of starting its own. Hit "call off"
+  *your* branch, pushing to the same PR, instead of starting its own. Hit "stop"
   to take the keys back. No branch-naming convention needed.
 - **Pluggable trackers** — Jira and GitHub Issues built in; add another in ~80 lines.
 - **Not locked to Claude** — the agent is a swappable command (`DEPUTY_AGENT_CMD`).
@@ -169,6 +172,12 @@ a GitHub token. Notable knobs:
 - `DEPUTY_WORKTREE_SETUP` — command run in each fresh worktree, e.g. `bundle install && yarn install` (so tests/hooks pass)
 - `DEPUTY_AGENT_CMD` — the agent command; defaults to the bundled Claude runner, swap for any other
 - `DEPUTY_PR_LABEL` — label put on deputy PRs (also how CI auto-fix finds them)
+
+## Roadmap
+
+- **Stacked PRs** — when one ticket is blocked by another, base the dependent ticket's
+  worktree + PR on the parent's branch (read the tracker's "blocked by" link) so both
+  can move at once, with the stack rebased as the parent changes.
 
 ## Contributing
 
