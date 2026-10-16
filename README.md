@@ -85,6 +85,8 @@ bin/daemon stop-ticket <TICKET>                              # cancel one in-fli
 
 ## Talking to deputies (no PR/Jira comments)
 
+![Chatting with a deputy mid-run](docs/chat.png)
+
 - **Live chat:** on the dashboard, open a case and type in the reply box — the
   message streams straight into that running agent's session (full context kept),
   and you watch it think and respond live. **Call off** cancels a case.
@@ -163,6 +165,19 @@ a GitHub token. Notable knobs:
 - `DEPUTY_AGENT_CMD` — the agent command; defaults to the bundled Claude runner, swap for any other
 - `DEPUTY_PR_LABEL` — label put on deputy PRs (also how CI auto-fix finds them)
 
+## Tests
+
+```bash
+npm test        # node --test, zero extra deps, no build step
+```
+
+Covered: the tracker adapters (Jira + GitHub Issues) against a mocked `fetch`,
+the tracker factory/contract, the dashboard's log-parsing helpers, and the
+control API end to end (status nesting, log, live-chat append, and the input
+validation on every POST) against a throwaway state dir on an ephemeral port.
+The server exposes a `makeServer({ tmp, repos, siteUrl })` factory so tests run
+fully isolated from your real `/tmp` and never shell out to a live daemon.
+
 ## Architecture & dev notes
 
 Three moving parts:
@@ -197,7 +212,7 @@ tail -f /tmp/deputy-item-<TICKET>.log   # a case's transcript
 npm run dashboard                        # the UI
 ```
 
-Gotchas (learned the hard way — keep these):
+Gotchas (learned the hard way, keep these):
 
 - The agent must run with **`CLAUDECODE` unset** (`env -u CLAUDECODE`) or the nested
   Claude CLI exits 1.

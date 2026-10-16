@@ -11,7 +11,8 @@
     "dashboard": "node server/server.mjs",
     "start": "bin/daemon start",
     "stop": "bin/daemon stop",
-    "status": "bin/daemon status"
+    "status": "bin/daemon status",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
