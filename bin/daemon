@@ -369,9 +369,11 @@ function process_ticket() {
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
   local lock_file="/tmp/deputy-item-${ticket_id}.lock"
   local input_file="/tmp/deputy-input-${ticket_id}.jsonl"   # live chat channel for this agent
+  local meta_file="/tmp/deputy-item-${ticket_id}.meta"      # which deputy (repo) this case belongs to
   : > "$input_file"
+  echo "$PROJECT_NAME" > "$meta_file"
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
-  trap "rm -f '$lock_file' '$input_file'" EXIT
+  trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
 
   echo "[$(date)] Starting work on $ticket_id" > "$log_file"
 

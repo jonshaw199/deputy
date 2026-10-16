@@ -10,21 +10,40 @@ async function api(path, opts) {
 }
 
 function badge(outcome) {
-  const cls = outcome === 'SUCCESS' ? 'ok' : outcome === 'TIMEOUT' ? 'warn' : 'fail';
-  return `<span class="badge ${cls}">${outcome}</span>`;
+  const map = { SUCCESS: ['ok', 'CLOSED'], TIMEOUT: ['warn', 'STALLED'], FAILED: ['fail', 'COLD'] };
+  const [cls, label] = map[outcome] || ['fail', 'COLD'];
+  return `<span class="badge ${cls}">${label}</span>`;
 }
 
-function renderDaemons(daemons) {
+// One open case, nested under its deputy. Clicking opens the live chat / case log.
+function caseRow(c) {
+  const row = el('div', 'case');
+  const links = [
+    c.item ? `<a href="${c.item}" target="_blank">ticket</a>` : '',
+    c.pr ? `<a href="${c.pr}" target="_blank">PR</a>` : '',
+  ].filter(Boolean).join(' · ');
+  row.innerHTML = `
+    <div class="case-head"><span class="dot busy"></span> <b>${esc(c.ticket)}</b>
+      <button class="linklike">💬 case log</button></div>
+    <div class="sub">${esc(c.phase || '').slice(0, 160)}</div>
+    ${links ? `<div class="sub">${links}</div>` : ''}`;
+  row.querySelector('button').onclick = () => openLog({ ticket: c.ticket }, `${c.ticket} · case log`);
+  return row;
+}
+
+function renderDeputies(daemons, orphans) {
   const wrap = $('#daemons');
   wrap.innerHTML = '';
-  if (!daemons.length) { wrap.append(el('div', 'muted', '🤠 No deputies on patrol. Deputize a repo above, or start one from the CLI.')); return; }
+  if (!daemons.length) wrap.append(el('div', 'muted', '🤠 No deputies on patrol. Deputize a repo above, or start one from the CLI.'));
   for (const d of daemons) {
+    const cases = d.cases || [];
     const card = el('div', 'card');
-    const dot = d.running ? 'ok' : 'off';
+    const dot = !d.running ? 'off' : cases.length ? 'busy' : 'ok';
+    const status = !d.running ? 'off duty' : cases.length ? `on ${cases.length} case${cases.length > 1 ? 's' : ''}` : 'on patrol';
     card.append(el('div', 'row', `
       <div>
         <h3><span class="dot ${dot}"></span> ${esc(d.project)}</h3>
-        <div class="sub">${d.running ? `on patrol · pid ${d.pid} · checks every ${d.interval}s` : 'off duty'}</div>
+        <div class="sub">${status}${d.running ? ` · pid ${d.pid} · checks every ${d.interval}s` : ''}</div>
         <div class="sub">${esc(d.repoDir || '')}</div>
       </div>`));
     const actions = el('div');
@@ -33,38 +52,32 @@ function renderDaemons(daemons) {
       stop.onclick = async () => { stop.disabled = true; await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project }) }); refresh(); };
       actions.append(stop);
     }
-    const viewLog = el('button', 'linklike', 'patrol log');
-    viewLog.onclick = () => openLog({ daemon: d.project }, `${d.project} · patrol log`);
     card.querySelector('.row').append(actions);
 
-    if (d.recent.length) {
-      const recent = el('div', 'recent');
-      recent.append(el('div', 'muted', 'Recent cases'));
-      for (const r of d.recent) {
-        const item = el('div', 'item');
-        const pr = r.pr ? ` · <a href="${r.pr}" target="_blank">PR</a>` : '';
-        item.innerHTML = `${badge(r.outcome)} <span>${esc(r.ticket)}</span>${pr}`;
-        recent.append(item);
-      }
-      card.append(recent);
+    if (cases.length) {
+      const sec = el('div', 'recent'); sec.append(el('div', 'muted', 'Open cases'));
+      for (const c of cases) sec.append(caseRow(c));
+      card.append(sec);
     }
-    const footer = el('div', 'recent'); footer.append(viewLog); card.append(footer);
+    if (d.recent?.length) {
+      const sec = el('div', 'recent'); sec.append(el('div', 'muted', 'Recent cases'));
+      for (const r of d.recent) {
+        const it = el('div', 'item');
+        const pr = r.pr ? ` · <a href="${r.pr}" target="_blank">PR</a>` : '';
+        it.innerHTML = `${badge(r.outcome)} <span>${esc(r.ticket)}</span>${pr}`;
+        sec.append(it);
+      }
+      card.append(sec);
+    }
+    const footer = el('div', 'recent');
+    const pl = el('button', 'linklike', '🔭 patrol log');
+    pl.onclick = () => openLog({ daemon: d.project }, `${d.project} · patrol log`);
+    footer.append(pl); card.append(footer);
     wrap.append(card);
   }
-}
-
-function renderActive(active) {
-  const wrap = $('#active');
-  wrap.innerHTML = '';
-  if (!active.length) { wrap.append(el('div', 'muted', '🌵 All quiet in town. No open cases right now.')); return; }
-  for (const a of active) {
-    const card = el('div', 'card');
-    const item = a.item ? ` · <a href="${a.item}" target="_blank">ticket</a>` : '';
-    const pr = a.pr ? ` · <a href="${a.pr}" target="_blank">PR</a>` : '';
-    card.append(el('div', null, `<h3><span class="dot busy"></span> ${esc(a.ticket)}</h3><div class="sub">${esc(a.phase).slice(0, 160)}</div><div class="sub">${item}${pr}</div>`));
-    const log = el('button', 'linklike', '💬 chat / live log');
-    log.onclick = () => openLog({ ticket: a.ticket }, a.ticket);
-    const footer = el('div', 'recent'); footer.append(log); card.append(footer);
+  if (orphans?.length) {
+    const card = el('div', 'card'); card.append(el('div', 'muted', 'Cases with no live deputy'));
+    for (const c of orphans) card.append(caseRow(c));
     wrap.append(card);
   }
 }
@@ -72,17 +85,16 @@ function renderActive(active) {
 async function refresh() {
   try {
     const s = await api('/api/status');
-    const anyRunning = s.daemons.some((d) => d.running);
-    const anyBusy = s.active.length > 0;
-    $('#globalDot').className = `dot ${anyBusy ? 'busy' : anyRunning ? 'ok' : 'off'}`;
-    $('#updated').textContent = `${s.daemons.filter((d) => d.running).length} on patrol · ${s.active.length} on the job · ${new Date().toLocaleTimeString()}`;
+    const running = s.daemons.filter((d) => d.running).length;
+    const open = s.daemons.reduce((n, d) => n + (d.cases || []).length, 0) + (s.orphans?.length || 0);
+    $('#globalDot').className = `dot ${open ? 'busy' : running ? 'ok' : 'off'}`;
+    $('#updated').textContent = `${running} deput${running === 1 ? 'y' : 'ies'} · ${open} open case${open === 1 ? '' : 's'} · ${new Date().toLocaleTimeString()}`;
 
     const sel = $('#repoSelect');
     if (sel.options.length <= 1 && s.repos.length) {
       for (const r of s.repos) sel.append(new Option(r.split('/').pop() + '  (' + r + ')', r));
     }
-    renderDaemons(s.daemons);
-    renderActive(s.active);
+    renderDeputies(s.daemons, s.orphans);
     if (logTarget) refreshLog();
   } catch (e) {
     $('#updated').textContent = 'server unreachable';

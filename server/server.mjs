@@ -71,7 +71,8 @@ function listActive() {
     .map((m) => {
       const ticket = m[1];
       const log = tail(join(TMP, `deputy-item-${ticket}.log`));
-      return { ticket, phase: lastMeaningful(log), pr: prUrlIn(log), item: itemUrlIn(log) };
+      const project = tail(join(TMP, `deputy-item-${ticket}.meta`)).trim() || null;
+      return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(log), item: itemUrlIn(log) };
     });
 }
 
@@ -90,7 +91,11 @@ const server = createServer(async (req, res) => {
   const path = url.pathname;
 
   if (path === '/api/status') {
-    return json(res, 200, { daemons: listDaemons(), active: listActive(), repos: REPOS, siteUrl: SITE_URL });
+    const daemons = listDaemons();
+    const active = listActive();
+    for (const d of daemons) d.cases = active.filter((a) => a.project === d.project);
+    const orphans = active.filter((a) => !daemons.some((d) => d.project === a.project));
+    return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
   }
   if (path === '/api/log') {
     const ticket = url.searchParams.get('ticket');
