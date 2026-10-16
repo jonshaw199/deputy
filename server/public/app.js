@@ -1,6 +1,7 @@
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const trunc = (s, n) => { s = String(s || ''); return s.length <= n ? esc(s) : esc(s.slice(0, n).replace(/\s+\S*$/, '')) + '…'; };
 
 let logTarget = null; // { ticket } or { daemon } currently shown in the modal
 
@@ -24,8 +25,8 @@ function caseRow(c) {
   ].filter(Boolean).join(' · ');
   const dot = c.needsInput ? 'warn' : 'busy';
   const detail = c.needsInput
-    ? `<div class="sub question">📻 <b>Needs your call:</b> ${esc(c.question || '').slice(0, 220)}</div>`
-    : `<div class="sub">${esc(c.phase || '').slice(0, 200)}</div>`;
+    ? `<div class="sub question">📻 <b>Needs your call:</b> ${trunc(c.question, 220)}</div>`
+    : `<div class="sub">${trunc(c.phase, 200)}</div>`;
   row.innerHTML = `
     <div class="case-head"><span class="dot ${dot}"></span> <b>${esc(c.ticket)}</b>
       <span class="case-actions"><span class="linklike">💬 case log</span><span class="linklike danger" data-stop>call off</span></span></div>
