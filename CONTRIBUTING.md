@@ -44,6 +44,22 @@ Key design points:
   widget, a CLI) can reuse the same endpoints: `/api/status`, `/api/start`,
   `/api/stop`, `/api/stop-case`, `/api/log`, `/api/continue`, `/api/say`.
 
+## Stop-and-wait (parked cases)
+
+Not every ticket is one-shot. The agent has an `mcp__deputy__ask_user` tool: when
+it calls it, the runner writes the question to `DEPUTY_ASK_FILE`, records the SDK
+session id to `DEPUTY_SESSION_FILE`, and the run ends. The daemon sees the ask file,
+keeps the worktree, and marks the case parked (it does not fail it or open a PR).
+
+When you answer (dashboard reply box or `deputy resume <TICKET> "…"`), the daemon
+relaunches the runner in the same worktree with `DEPUTY_RESUME=<session id>`. The SDK
+persists sessions to disk, so the resumed agent has the entire prior conversation,
+even if the original process exited, you waited hours, or the machine rebooted.
+
+On the dashboard, `/api/say` is the single entry point: if the agent is live it
+streams the message into the session; if the case is parked it queues a `resume`
+request instead (daemon drains it on the `SIGUSR1` nudge).
+
 ## State
 
 All runtime state lives in `/tmp`:
@@ -52,7 +68,10 @@ All runtime state lives in `/tmp`:
 deputy-<repo>.pid / .log / .meta          a deputy: pid, patrol log, repo path
 deputy-item-<ticket>.lock / .log / .meta  a case: real pid, transcript, owning repo
 deputy-input-<ticket>.jsonl               a case's live chat channel (runner tails it)
-deputy-queue-<repo>.jsonl                 pending `continue` requests (drained on SIGUSR1)
+deputy-queue-<repo>.jsonl                 pending continue/resume requests (drained on SIGUSR1)
+deputy-ask-<ticket>.txt                   a parked case's question (present => needs your call)
+deputy-session-<ticket>.txt               the SDK session id, for resuming after a pause
+deputy-paused-<ticket>.meta               a parked case's owning repo
 ```
 
 ## Adding a tracker

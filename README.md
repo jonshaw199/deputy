@@ -34,6 +34,10 @@ you're working on.
 - **Fully autonomous loop** — poll → implement → push → draft PR → advance the item.
 - **Fixes its own CI** — watches its PRs; when CI goes red it pulls the failures +
   annotations and pushes a fix automatically.
+- **Stops and asks instead of guessing** — when a ticket is ambiguous or needs a
+  decision, the deputy parks the case, shows its question ("needs your call"), and
+  waits. You answer and it resumes the exact same session (works even after it exits,
+  so long waits and reboots are fine). Not every ticket is one-shot, and that's OK.
 - **Chat with any deputy live** — open a case and talk to the agent mid-run; it keeps
   full context (💬 case log). Or `deputy continue <TICKET> "…"`. No PR/Jira comments.
 - **Pluggable trackers** — Jira and GitHub Issues built in; add another in ~80 lines.
@@ -87,6 +91,11 @@ bin/daemon stop-ticket <TICKET>                              # cancel one in-fli
 
 ![Chatting with a deputy mid-run](docs/chat.png)
 
+- **When a deputy needs your call:** if it hits something it shouldn't decide alone,
+  it parks the case and surfaces its question (flagged "needs your call" on the
+  dashboard). Open the case, answer in the same box, and it resumes right where it
+  left off with full context. The session is saved to disk, so it survives the agent
+  exiting, long waits, even a reboot. Or from the CLI: `deputy resume <TICKET> "…"`.
 - **Live chat:** on the dashboard, open a case and type in the reply box — the
   message streams straight into that running agent's session (full context kept),
   and you watch it think and respond live. **Call off** cancels a case.

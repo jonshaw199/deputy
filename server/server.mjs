@@ -79,9 +79,29 @@ export function makeServer(opts = {}) {
         const ticket = m[1];
         const log = tail(join(TMP, `deputy-item-${ticket}.log`));
         const project = tail(join(TMP, `deputy-item-${ticket}.meta`)).trim() || null;
-        return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(log), item: itemUrlIn(log) };
+        return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(log), item: itemUrlIn(log), needsInput: false };
       });
   }
+
+  // Cases parked by the agent (ask_user): a question on file, no live process; a reply resumes them.
+  function listPaused() {
+    return readdirSync(TMP)
+      .map((f) => f.match(/^deputy-ask-(.+)\.txt$/))
+      .filter(Boolean)
+      .map((m) => {
+        const ticket = m[1];
+        const question = tail(join(TMP, `deputy-ask-${ticket}.txt`)).trim();
+        const log = tail(join(TMP, `deputy-item-${ticket}.log`));
+        const project = tail(join(TMP, `deputy-paused-${ticket}.meta`)).trim()
+          || tail(join(TMP, `deputy-item-${ticket}.meta`)).trim() || null;
+        return { ticket, project, phase: question, question, pr: prUrlIn(log), item: itemUrlIn(log), needsInput: true };
+      });
+  }
+  const liveOrPaused = () => {
+    const paused = listPaused();
+    const pausedIds = new Set(paused.map((p) => p.ticket));
+    return [...listActive().filter((a) => !pausedIds.has(a.ticket)), ...paused];
+  };
 
   const json = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
   const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
@@ -97,9 +117,9 @@ export function makeServer(opts = {}) {
 
     if (path === '/api/status') {
       const daemons = listDaemons();
-      const active = listActive();
-      for (const d of daemons) d.cases = active.filter((a) => a.project === d.project);
-      const orphans = active.filter((a) => !daemons.some((d) => d.project === a.project));
+      const cases = liveOrPaused();
+      for (const d of daemons) d.cases = cases.filter((a) => a.project === d.project);
+      const orphans = cases.filter((a) => !daemons.some((d) => d.project === a.project));
       return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
     }
     if (path === '/api/log') {
@@ -141,12 +161,21 @@ export function makeServer(opts = {}) {
       return json(res, 200, await runDaemon(cwd, 'stop-ticket', ticket));
     }
     if (path === '/api/say' && req.method === 'POST') {
-      // Live chat: append a message to a running agent's input channel (it tails it).
+      // One box: stream to a live agent, or resume a parked one (queue + SIGUSR1 nudge).
       const { ticket, message } = await readBody(req);
       if (!ticket || !message) return json(res, 400, { error: 'ticket and message required' });
-      if (!listActive().some((a) => a.ticket === ticket)) return json(res, 400, { error: 'no live agent for that ticket' });
-      appendFileSync(join(TMP, `deputy-input-${ticket}.jsonl`), message + '\n');
-      return json(res, 200, { ok: true });
+      if (listActive().some((a) => a.ticket === ticket)) {
+        appendFileSync(join(TMP, `deputy-input-${ticket}.jsonl`), message + '\n');
+        return json(res, 200, { ok: true });
+      }
+      const paused = listPaused().find((a) => a.ticket === ticket);
+      if (paused?.project) {
+        const line = JSON.stringify({ ticket, prompt: message, kind: 'resume', id: `web-${ticket}-${Date.now()}` });
+        appendFileSync(join(TMP, `deputy-queue-${paused.project}.jsonl`), line + '\n');
+        try { process.kill(Number(tail(join(TMP, `deputy-${paused.project}.pid`)).trim()), 'SIGUSR1'); } catch {}
+        return json(res, 200, { ok: true, resumed: true });
+      }
+      return json(res, 400, { error: 'no live or parked agent for that ticket' });
     }
 
     // Static

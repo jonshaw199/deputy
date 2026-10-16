@@ -30,6 +30,7 @@ section { margin-bottom: 32px; }
 
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); vertical-align: middle; }
 .dot.ok { background: var(--ok); } .dot.fail { background: var(--fail); }
+.dot.warn { background: var(--warn); animation: pulse 1.2s infinite; }
 .dot.busy { background: var(--busy); animation: pulse 1.2s infinite; } .dot.off { background: var(--muted); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
@@ -37,11 +38,14 @@ section { margin-bottom: 32px; }
 .recent .item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
 .case { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .case:last-child { border-bottom: none; }
+/* Parked case: amber highlight on the question line only, so the header stays aligned. */
+.case .question { color: var(--text); margin-top: 5px; padding: 6px 10px; border-left: 3px solid var(--warn); background: rgba(210,153,34,.08); border-radius: 6px; word-break: normal; overflow-wrap: break-word; }
+.case .question b { color: var(--warn); }
 .case-head { display: flex; align-items: center; gap: 8px; }
 .case-head b { font-size: 14px; }
 .case-head .case-actions { margin-left: auto; display: flex; gap: 12px; }
 .danger, .linklike.danger { color: var(--fail); }
-.actions-row { display: flex; gap: 16px; align-items: center; }
+.actions-row { display: flex; gap: 16px; align-items: center; margin-top: 8px; padding-top: 8px; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
 .badge.ok { color: var(--ok); } .badge.fail { color: var(--fail); } .badge.warn { color: var(--warn); }
 

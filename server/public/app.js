@@ -17,18 +17,22 @@ function badge(outcome) {
 
 // One open case, nested under its deputy. Clicking opens the live chat / case log.
 function caseRow(c) {
-  const row = el('div', 'case');
+  const row = el('div', c.needsInput ? 'case needs-input' : 'case');
   const links = [
     c.item ? `<a href="${c.item}" target="_blank">ticket</a>` : '',
     c.pr ? `<a href="${c.pr}" target="_blank">PR</a>` : '',
   ].filter(Boolean).join(' · ');
+  const dot = c.needsInput ? 'warn' : 'busy';
+  const detail = c.needsInput
+    ? `<div class="sub question">📻 <b>Needs your call:</b> ${esc(c.question || '').slice(0, 220)}</div>`
+    : `<div class="sub">${esc(c.phase || '').slice(0, 200)}</div>`;
   row.innerHTML = `
-    <div class="case-head"><span class="dot busy"></span> <b>${esc(c.ticket)}</b>
+    <div class="case-head"><span class="dot ${dot}"></span> <b>${esc(c.ticket)}</b>
       <span class="case-actions"><span class="linklike">💬 case log</span><span class="linklike danger" data-stop>call off</span></span></div>
-    <div class="sub">${esc(c.phase || '').slice(0, 160)}</div>
+    ${detail}
     ${links ? `<div class="sub">${links}</div>` : ''}`;
   row.style.cursor = 'pointer';
-  row.onclick = () => openLog({ ticket: c.ticket }, `${c.ticket} · case log`);
+  row.onclick = () => openLog({ ticket: c.ticket, needsInput: c.needsInput }, `${c.ticket} · case log`);
   row.querySelectorAll('a').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
   row.querySelector('[data-stop]').onclick = async (e) => {
     e.stopPropagation();
@@ -92,9 +96,12 @@ async function refresh() {
   try {
     const s = await api('/api/status');
     const running = s.daemons.filter((d) => d.running).length;
-    const open = s.daemons.reduce((n, d) => n + (d.cases || []).length, 0) + (s.orphans?.length || 0);
-    $('#globalDot').className = `dot ${open ? 'busy' : running ? 'ok' : 'off'}`;
-    $('#updated').textContent = `${running} deput${running === 1 ? 'y' : 'ies'} · ${open} open case${open === 1 ? '' : 's'} · ${new Date().toLocaleTimeString()}`;
+    const allCases = [...s.daemons.flatMap((d) => d.cases || []), ...(s.orphans || [])];
+    const open = allCases.length;
+    const needs = allCases.filter((c) => c.needsInput).length;
+    $('#globalDot').className = `dot ${needs ? 'warn' : open ? 'busy' : running ? 'ok' : 'off'}`;
+    const needsNote = needs ? ` · ⚠️ ${needs} need${needs === 1 ? 's' : ''} your call` : '';
+    $('#updated').textContent = `${running} deput${running === 1 ? 'y' : 'ies'} · ${open} open case${open === 1 ? '' : 's'}${needsNote} · ${new Date().toLocaleTimeString()}`;
 
     // Dropdown = repos without a deputy already on patrol; rebuilt only when it changes.
     const sel = $('#repoSelect');
@@ -116,6 +123,7 @@ async function refresh() {
 
 let logTimer = null;
 let pendingEcho = '';   // your just-sent message, shown until the real log line lands
+let pendingResume = false;   // answering a parked case: show a "resuming" note until the agent reconnects
 
 async function openLog(target, title) {
   logTarget = target;
@@ -123,6 +131,7 @@ async function openLog(target, title) {
   $('#logTitle').textContent = title;
   // Show the reply box only when chatting with a live agent (a ticket, not a poller log).
   $('#logReply').classList.toggle('hidden', !target.ticket);
+  if (target.ticket) $('#replyInput').placeholder = target.needsInput ? 'Answer the deputy…' : 'Reply to this agent…';
   $('#logModal').classList.remove('hidden');
   refreshLog();
   clearInterval(logTimer);
@@ -145,7 +154,8 @@ $('#logReply').onsubmit = async (e) => {
   btn.disabled = true; const label = btn.textContent; btn.textContent = 'Sending…';
   const r = await api('/api/say', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: logTarget.ticket, message }) });
   btn.disabled = false; btn.textContent = label;
-  if (r.error) { pendingEcho = ''; inp.value = message; alert(r.error); } else { inp.focus(); refreshLog(); }
+  if (r.error) { pendingEcho = ''; inp.value = message; alert(r.error); }
+  else { if (r.resumed) pendingResume = true; inp.focus(); refreshLog(); }
 };
 async function refreshLog() {
   if (!logTarget) return;
@@ -156,10 +166,12 @@ async function refreshLog() {
   let out = text || '(empty)';
   // Keep the optimistic echo visible until the real [YOU] line shows up in the log.
   if (pendingEcho) { if (out.includes(pendingEcho)) pendingEcho = ''; else out += `\n[YOU] ${pendingEcho}\n`; }
+  // While a parked case spins back up, show a resuming note until the agent reconnects.
+  if (pendingResume) { if (/Reconnecting to the agent/.test(out)) pendingResume = false; else out += `\n⏳ Resuming the deputy…\n`; }
   body.textContent = out;
   if (atBottom) body.scrollTop = body.scrollHeight;
 }
-$('#logClose').onclick = () => { logTarget = null; pendingEcho = ''; clearInterval(logTimer); $('#logModal').classList.add('hidden'); };
+$('#logClose').onclick = () => { logTarget = null; pendingEcho = ''; pendingResume = false; clearInterval(logTimer); $('#logModal').classList.add('hidden'); };
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#logModal').classList.contains('hidden')) $('#logClose').click(); });
 
 $('#startForm').onsubmit = async (e) => {

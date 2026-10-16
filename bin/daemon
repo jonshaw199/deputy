@@ -185,12 +185,14 @@ function setup_worktree() {
 }
 
 function run_agent() {
-  # run_agent <worktree> <prompt> <log_file> [input_file]
-  # If input_file is given, the agent runs as a LIVE session reading follow-ups
-  # appended to it (you can chat with it mid-run). Returns the agent's exit code.
-  local worktree=$1 agent_prompt=$2 lf=$3 input_file=$4
+  # run_agent <worktree> <prompt> <log_file> [input_file] [ask_file] [session_file] [resume_id]
+  local worktree=$1 agent_prompt=$2 lf=$3 input_file=$4 ask_file=$5 session_file=$6 resume_id=$7
   [ -n "$PRE_AGENT" ] && eval "$PRE_AGENT" >> "$lf" 2>&1
-  ( cd "$worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$agent_prompt" ${input_file:+DEPUTY_INPUT="$input_file"} \
+  ( cd "$worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$agent_prompt" \
+      ${input_file:+DEPUTY_INPUT="$input_file"} \
+      ${ask_file:+DEPUTY_ASK_FILE="$ask_file"} \
+      ${session_file:+DEPUTY_SESSION_FILE="$session_file"} \
+      ${resume_id:+DEPUTY_RESUME="$resume_id"} \
       timeout "$CLAUDE_TIMEOUT_SECONDS" bash -c "$AGENT_CMD" >> "$lf" 2>&1 )
 }
 
@@ -333,35 +335,42 @@ function drain_continue_queue() {
   local line
   while IFS= read -r line; do
     [ -z "$line" ] && continue
-    local ticket prompt cid
+    local ticket prompt cid kind
     ticket=$(echo "$line" | jq -r '.ticket // empty' 2>/dev/null)
     prompt=$(echo "$line" | jq -r '.prompt // empty' 2>/dev/null)
     cid=$(echo "$line" | jq -r '.id // empty' 2>/dev/null)
+    kind=$(echo "$line" | jq -r '.kind // "continue"' 2>/dev/null)
     { [ -z "$ticket" ] || [ -z "$prompt" ]; } && continue
     [ -z "$cid" ] && cid="q$(echo "$line" | cksum | cut -d' ' -f1)"
-    echo "[$(date)] Local continuation request for $ticket (cont $cid)" >> "$DAEMON_LOG_FILE"
-    local clock="/tmp/deputy-item-${ticket}-cont-${cid}.lock"
-    continue_ticket "$ticket" "$prompt" "$cid" & echo $! > "$clock"
+    if [ "$kind" = "resume" ]; then
+      echo "[$(date)] Resume request for $ticket" >> "$DAEMON_LOG_FILE"
+      local rlock="/tmp/deputy-item-${ticket}.lock"
+      resume_ticket "$ticket" "$prompt" & echo $! > "$rlock"
+    else
+      echo "[$(date)] Local continuation request for $ticket (cont $cid)" >> "$DAEMON_LOG_FILE"
+      local clock="/tmp/deputy-item-${ticket}-cont-${cid}.lock"
+      continue_ticket "$ticket" "$prompt" "$cid" & echo $! > "$clock"
+    fi
   done < "$tmp"
   rm -f "$tmp"
 }
 
-# Appends a local "do X next" request to this project's queue (drained by the running daemon).
-function enqueue_continue() {
-  local ticket=$1 prompt=$2
-  if [ -z "$ticket" ] || [ -z "$prompt" ]; then
-    echo "Usage: deputy continue <TICKET> \"<what to do>\""; exit 1
-  fi
-  jq -nc --arg t "$ticket" --arg p "$prompt" --arg id "cli-$(date +%s)-$$" \
-    '{ticket:$t, prompt:$p, id:$id}' >> "$QUEUE_FILE"
+# Appends a queued request to this project's queue (drained by the running daemon).
+function enqueue_request() {
+  local ticket=$1 prompt=$2 kind=$3 usage=$4
+  if [ -z "$ticket" ] || [ -z "$prompt" ]; then echo "$usage"; exit 1; fi
+  jq -nc --arg t "$ticket" --arg p "$prompt" --arg k "$kind" --arg id "cli-$(date +%s)-$$" \
+    '{ticket:$t, prompt:$p, kind:$k, id:$id}' >> "$QUEUE_FILE"
   # Nudge the running daemon to drain the queue now (instead of waiting for the poll).
   local dpid; dpid=$(cat "$DAEMON_PID_FILE" 2>/dev/null)
   if [ -n "$dpid" ] && kill -USR1 "$dpid" 2>/dev/null; then
-    echo "Queued continuation for $ticket (daemon notified; picking it up now)."
+    echo "Queued $kind for $ticket (daemon notified; picking it up now)."
   else
-    echo "Queued continuation for $ticket (no running daemon; it will run on next start)."
+    echo "Queued $kind for $ticket (no running daemon; it will run on next start)."
   fi
 }
+function enqueue_continue() { enqueue_request "$1" "$2" continue "Usage: deputy continue <TICKET> \"<what to do>\""; }
+function enqueue_resume()   { enqueue_request "$1" "$2" resume   "Usage: deputy resume <TICKET> \"<your answer>\""; }
 
 function process_ticket() {
   local ticket_id=$1
@@ -370,8 +379,11 @@ function process_ticket() {
   local lock_file="/tmp/deputy-item-${ticket_id}.lock"
   local input_file="/tmp/deputy-input-${ticket_id}.jsonl"   # live chat channel for this agent
   local meta_file="/tmp/deputy-item-${ticket_id}.meta"      # which deputy (repo) this case belongs to
+  local ask_file="/tmp/deputy-ask-${ticket_id}.txt"
+  local session_file="/tmp/deputy-session-${ticket_id}.txt"
   : > "$input_file"
   echo "$PROJECT_NAME" > "$meta_file"
+  rm -f "$ask_file" "$session_file" "/tmp/deputy-paused-${ticket_id}.meta"
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
 
@@ -434,12 +446,25 @@ ${item_url:+**Work item:** $item_url}
 You may receive follow-up messages while you work (via the dashboard) — treat each as
 additional instructions in this same session and keep going.
 
+**Default to working autonomously** and make reasonable, reversible decisions yourself. Only
+call \`mcp__deputy__ask_user\` when you genuinely cannot proceed (a required product or design
+decision, a hard-to-reverse choice, or missing access or information): ask one specific
+question and STOP, do not guess or open a PR, and you will be resumed with the answer.
+
 Work autonomously. When done, report the PR URL."
 
   local timeout_mins=$((CLAUDE_TIMEOUT_SECONDS / 60))
   echo "[$(date)] Starting agent (max ${timeout_mins} min, live chat via dashboard)..." >> "$log_file"
-  run_agent "$ticket_worktree" "$prompt" "$log_file" "$input_file"
+  run_agent "$ticket_worktree" "$prompt" "$log_file" "$input_file" "$ask_file" "$session_file"
   local exit_code=$?
+
+  # Parked on a question: keep the worktree + saved session, surface it, and wait.
+  if [ -f "$ask_file" ]; then
+    echo "[$(date)] NEEDS-INPUT: $ticket_id" >> "$DAEMON_LOG_FILE"
+    echo "$PROJECT_NAME" > "/tmp/deputy-paused-${ticket_id}.meta"
+    echo "[$(date)] Paused waiting for your answer (reply in the dashboard)." >> "$log_file"
+    return 0
+  fi
 
   if [ $exit_code -eq 124 ]; then
     echo "[$(date)] TIMEOUT: $ticket_id" >> "$DAEMON_LOG_FILE"
@@ -453,6 +478,60 @@ Work autonomously. When done, report the PR URL."
   cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
   git worktree prune 2>/dev/null || true
   rm -f "$lock_file"
+}
+
+# resume_ticket <ticket_id> <reply>
+# Answers a parked case: resumes its saved SDK session in the same worktree.
+function resume_ticket() {
+  local ticket_id=$1 reply=$2
+  local log_file="/tmp/deputy-item-${ticket_id}.log"
+  local lock_file="/tmp/deputy-item-${ticket_id}.lock"
+  local input_file="/tmp/deputy-input-${ticket_id}.jsonl"
+  local meta_file="/tmp/deputy-item-${ticket_id}.meta"
+  local ask_file="/tmp/deputy-ask-${ticket_id}.txt"
+  local session_file="/tmp/deputy-session-${ticket_id}.txt"
+  local paused_meta="/tmp/deputy-paused-${ticket_id}.meta"
+  local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
+
+  local session; session=$(cat "$session_file" 2>/dev/null)
+  if [ -z "$session" ] || [ ! -d "$ticket_worktree" ]; then
+    echo "[$(date)] Cannot resume $ticket_id (missing session or worktree)" >> "$DAEMON_LOG_FILE"
+    return 1
+  fi
+
+  : > "$input_file"
+  echo "$PROJECT_NAME" > "$meta_file"
+  rm -f "$ask_file" "$paused_meta"
+  trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
+
+  echo "[$(date)] Resuming $ticket_id with your answer" >> "$log_file"
+  echo "[YOU] $reply" >> "$log_file"
+  echo "⏳ Reconnecting to the agent..." >> "$log_file"
+
+  local prompt="The user replied to your question: $reply
+
+If that reply actually answers what you asked, proceed and finish the work (implement, test,
+commit, push, open or update the draft PR, and mark the item done). If it does NOT answer your
+question or is unclear, call mcp__deputy__ask_user again to clarify instead of guessing."
+
+  run_agent "$ticket_worktree" "$prompt" "$log_file" "$input_file" "$ask_file" "$session_file" "$session"
+  local exit_code=$?
+
+  if [ -f "$ask_file" ]; then
+    echo "[$(date)] NEEDS-INPUT: $ticket_id" >> "$DAEMON_LOG_FILE"
+    echo "$PROJECT_NAME" > "$paused_meta"
+    echo "[$(date)] Paused waiting for your answer (reply in the dashboard)." >> "$log_file"
+    return 0
+  fi
+
+  if [ $exit_code -eq 0 ]; then
+    echo "[$(date)] SUCCESS: $ticket_id (resumed)" >> "$DAEMON_LOG_FILE"
+  else
+    echo "[$(date)] FAILED: $ticket_id (resumed, exit $exit_code)" >> "$DAEMON_LOG_FILE"
+  fi
+  cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
+  git worktree prune 2>/dev/null || true
+  rm -f "$session_file"
 }
 
 function stop_ticket() {
@@ -477,6 +556,11 @@ function stop_ticket() {
   done
   git worktree prune 2>/dev/null || true
 
+  # Clear any parked-for-input state too.
+  for f in "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-session-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta"; do
+    [ -f "$f" ] && { rm -f "$f"; killed=1; }
+  done
+
   [ $killed -eq 1 ] && echo "Stopped $ticket_id." || echo "$ticket_id does not appear to be running."
   local url; url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
   [ -n "$url" ] && echo "Note: it was moved to the in-progress state when picked up; move it back if you don't want it reprocessed: $url"
@@ -488,7 +572,8 @@ case "$1" in
   restart)     [ -f "$DAEMON_PID_FILE" ] && stop_daemon; sleep 1; start_daemon ;;
   status)      status_daemon ;;
   continue)    enqueue_continue "$2" "$3" ;;   # deputy continue <TICKET> "<what to do>"
+  resume)      enqueue_resume "$2" "$3" ;;     # deputy resume <TICKET> "<answer>"  (answer a parked case)
   stop-ticket) stop_ticket "$2" ;;             # cancel one in-flight ticket
   __run)       watch_and_process ;;            # internal: the backgrounded poll loop
-  *) echo "Usage: $0 {start|stop|restart|status|continue <TICKET> \"<prompt>\"|stop-ticket <TICKET>}"; exit 1 ;;
+  *) echo "Usage: $0 {start|stop|restart|status|continue <TICKET> \"<prompt>\"|resume <TICKET> \"<answer>\"|stop-ticket <TICKET>}"; exit 1 ;;
 esac

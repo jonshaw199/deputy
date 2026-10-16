@@ -19,6 +19,13 @@ before(async () => {
   writeFileSync(join(dir, 'deputy-item-DEMO-1.log'), '[ASSISTANT] working on it\nITEM_URL: https://acme.atlassian.net/browse/DEMO-1\n');
   writeFileSync(join(dir, 'deputy-item-DEMO-1.meta'), 'icc_app');
   writeFileSync(join(dir, 'deputy-input-DEMO-1.jsonl'), '');
+  // A second deputy (dead pid) hosting a case parked on a question.
+  writeFileSync(join(dir, 'deputy-atlas.pid'), '2147483646'); // not alive
+  writeFileSync(join(dir, 'deputy-atlas.meta'), '/repos/atlas');
+  writeFileSync(join(dir, 'deputy-ask-DEMO-2.txt'), 'Muted illustration or a text prompt for the empty state?');
+  writeFileSync(join(dir, 'deputy-paused-DEMO-2.meta'), 'atlas');
+  writeFileSync(join(dir, 'deputy-session-DEMO-2.txt'), 'sess-xyz');
+  writeFileSync(join(dir, 'deputy-item-DEMO-2.log'), '[NEEDS-INPUT] Muted illustration or a text prompt for the empty state?\n');
 
   server = makeServer({ tmp: dir, repos: [ALLOWED_REPO], siteUrl: 'https://acme.atlassian.net', fileEnv: {} });
   await new Promise((r) => server.listen(0, r));
@@ -40,6 +47,27 @@ test('GET /api/status nests the open case under its deputy and echoes config', a
   assert.equal(d.cases[0].ticket, 'DEMO-1');
   assert.equal(d.cases[0].item, 'https://acme.atlassian.net/browse/DEMO-1');
   assert.equal(s.orphans.length, 0);
+});
+
+test('GET /api/status surfaces a parked case as needsInput with its question', async () => {
+  const s = await (await get('/api/status')).json();
+  const atlas = s.daemons.find((x) => x.project === 'atlas');
+  assert.equal(atlas.cases.length, 1);
+  const c = atlas.cases[0];
+  assert.equal(c.ticket, 'DEMO-2');
+  assert.equal(c.needsInput, true);
+  assert.match(c.question, /Muted illustration/);
+});
+
+test('POST /api/say resumes a parked case: queues a resume request, not a chat line', async () => {
+  const r = await post('/api/say', { ticket: 'DEMO-2', message: 'use the muted illustration' });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).resumed, true);
+  const queued = readFileSync(join(dir, 'deputy-queue-atlas.jsonl'), 'utf8').trim();
+  const entry = JSON.parse(queued);
+  assert.equal(entry.kind, 'resume');
+  assert.equal(entry.ticket, 'DEMO-2');
+  assert.equal(entry.prompt, 'use the muted illustration');
 });
 
 test('GET /api/log returns the case transcript, or 400 without a target', async () => {
