@@ -74,6 +74,15 @@ bin/daemon continue <TICKET> "also handle the empty state"   # follow-up on its 
 bin/daemon stop-ticket <TICKET>                              # cancel one in-flight job
 ```
 
+## Day to day
+
+1. **Post a deputy** to a repo — `Deputize` it in the dashboard, or `cd <repo> && /path/to/deputy/bin/daemon start`.
+2. **Hand it a case** — label a ticket `ai-ready` and move it to the ready state (Jira: `Groomed`; GitHub Issues: just the label). The deputy picks it up on its next patrol (≤ `CHECK_INTERVAL`).
+3. **Watch it work** — open the dashboard (`npm run dashboard` → http://localhost:4319). The case shows under its deputy with a streaming log.
+4. **Steer it live** — open the case and type in the reply box; it answers in the same session.
+5. **It finishes on its own** — opens a draft PR and advances the ticket. If the PR's CI goes red, it fixes it automatically.
+6. **Cancel anything** — "call off" a single case, "stand down" a whole deputy.
+
 ## Talking to deputies (no PR/Jira comments)
 
 - **Live chat:** on the dashboard, open a case and type in the reply box — the
@@ -153,3 +162,47 @@ a GitHub token. Notable knobs:
 - `DEPUTY_WORKTREE_SETUP` — command run in each fresh worktree, e.g. `bundle install && yarn install` (so tests/hooks pass)
 - `DEPUTY_AGENT_CMD` — the agent command; defaults to the bundled Claude runner, swap for any other
 - `DEPUTY_PR_LABEL` — label put on deputy PRs (also how CI auto-fix finds them)
+
+## Architecture & dev notes
+
+Three moving parts:
+
+- **`bin/daemon`** (bash) — one process per repo. Polls the tracker; for each ready
+  ticket it creates a git worktree, runs the agent, opens the PR, and watches its own
+  PRs for red CI. Backgrounded via `nohup … __run`; a `SIGUSR1` makes it drain the
+  follow-up queue immediately.
+- **`lib/claude-agent-runner.mjs`** (node) — runs the Claude Agent SDK inside a
+  worktree. One-shot by default; a **live session** when `DEPUTY_INPUT` is set — it
+  tails that file and streams each line into the same `query()` (full context), closing
+  on `__exit__` or idle.
+- **`server/server.mjs` + `server/public/`** — the dashboard. Reads daemon state from
+  `/tmp` (read-only) and acts by shelling out to `bin/daemon` or writing the input/queue
+  files. Vanilla JS, no build step.
+
+State all lives in `/tmp`:
+
+```
+deputy-<repo>.pid / .log / .meta        a deputy: pid, patrol log, repo path
+deputy-item-<ticket>.lock / .log / .meta  a case: real pid, transcript, owning repo
+deputy-input-<ticket>.jsonl             a case's live chat channel (runner tails it)
+deputy-queue-<repo>.jsonl               pending `continue` requests (drained on SIGUSR1)
+```
+
+Run / debug locally:
+
+```bash
+cd <repo> && /path/to/deputy/bin/daemon start
+tail -f /tmp/deputy-<repo>.log          # patrol log
+tail -f /tmp/deputy-item-<TICKET>.log   # a case's transcript
+npm run dashboard                        # the UI
+```
+
+Gotchas (learned the hard way — keep these):
+
+- The agent must run with **`CLAUDECODE` unset** (`env -u CLAUDECODE`) or the nested
+  Claude CLI exits 1.
+- Lock files store the job's **real pid via the spawner's `$!`** — bash `$$` is the
+  daemon's pid even in a backgrounded subshell, and macOS bash 3.2 has no `$BASHPID`.
+  This is why `stop-ticket` kills the case and not the whole daemon.
+- The poll sleep is `sleep … & wait $!` so a `SIGUSR1` can interrupt it.
+- **Quote any `.env` value with spaces** or `source` mangles it.
