@@ -186,12 +186,19 @@ $('#logReply').onsubmit = async (e) => {
   const btn = e.target.querySelector('button[type=submit]');
   const message = inp.value.trim();
 
-  // A PR entry: dispatch a follow-up on that branch (Deputy works, you stay the only PR voice).
+  // A PR entry: typed = do exactly that; empty = "address all" the comments (with a confirm).
   if (logTarget?.pr) {
     const p = logTarget.pr;
+    let prompt = message;
+    if (!message) {
+      const n = (p.comments || []).length;
+      if (!n) return;
+      if (!confirm(`Have Deputy address ${n} review comment${n === 1 ? '' : 's'} on this PR? It will edit the code and push a fix.`)) return;
+      prompt = prCommentsPrompt(p, '');
+    }
     inp.value = '';
     btn.disabled = true; const label = btn.textContent; btn.textContent = 'Sending…';
-    const r = await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: logTarget.project, ticket: p.ticket || `PR-${p.number}`, branch: p.branch, prompt: prCommentsPrompt(p, message) }) });
+    const r = await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: logTarget.project, ticket: p.ticket || `PR-${p.number}`, branch: p.branch, prompt }) });
     btn.disabled = false; btn.textContent = label;
     if (r.error) { inp.value = message; alert(r.error); }
     else { $('#logBody').textContent += `\n\n[SENT] Deputy is on it; it'll appear as a working case.`; $('#logBody').scrollTop = $('#logBody').scrollHeight; }
@@ -212,13 +219,8 @@ $('#logReply').onsubmit = async (e) => {
   if (r.error) { pendingEcho = ''; inp.value = message; alert(r.error); }
   else { if (r.resumed) pendingResume = true; inp.focus(); refreshLog(); }
 };
-// Fix every unresolved comment with no typing: dispatch with just the comment list.
-$('#addressAll').onclick = () => {
-  const n = (logTarget?.pr?.comments || []).length;
-  if (!confirm(`Have Deputy address ${n} review comment${n === 1 ? '' : 's'} on this PR? It will edit the code and push a fix.`)) return;
-  $('#replyInput').value = '';
-  $('#logReply').requestSubmit();
-};
+// "Address all" = submit with an empty box; the submit handler confirms and bundles the comments.
+$('#addressAll').onclick = () => { $('#replyInput').value = ''; $('#logReply').requestSubmit(); };
 // "I don't feel like answering" — resume the parked agent and let it decide for itself.
 $('#letDecide').onclick = async () => {
   if (!logTarget?.needsInput) return;

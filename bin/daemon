@@ -153,7 +153,10 @@ function watch_and_process() {
     check_for_ci_failures
 
     # Publish open PRs + unresolved review comments for the dashboard (deputy never replies).
-    (cd "$MAIN_PROJECT_DIR" && node "$PR_WATCH" > "$PRS_FILE" 2>/dev/null) || true
+    # Write to a temp file and move it into place atomically so the dashboard never reads a
+    # half-written/empty file mid-poll (which made in-review cases flicker). Keep the old file
+    # if pr-watch fails (e.g. a transient gh hiccup) instead of blanking it.
+    (cd "$MAIN_PROJECT_DIR" && node "$PR_WATCH" > "${PRS_FILE}.tmp" 2>/dev/null && mv -f "${PRS_FILE}.tmp" "$PRS_FILE") || rm -f "${PRS_FILE}.tmp"
 
     # Run any queued "do X next" / resume requests.
     drain_continue_queue
