@@ -82,6 +82,29 @@ only link, so it needs no branch-naming convention; before a PR exists there's
 nothing to join on, so it starts fresh. The runner finds the Agent SDK via
 `DEPUTY_SDK_DIR` when your worktree wasn't set up by the daemon.
 
+## Stacked PRs (dependent tickets)
+
+Label a whole epic `ai-ready` and the deputy figures out the order itself. Before a
+ticket is marked started, `process_ticket` runs `resolve_base_ref`, which reads the
+ticket's blockers (`tracker-cli blockers <id>` -> the tracker's optional `getBlockers`)
+and inspects each blocker's PR with `gh`:
+
+- **no blockers / all merged** -> build off `origin/main` (normal).
+- **a blocker has no PR yet** (not started) or **more than one blocker still open**
+  -> `WAIT`: leave the label on, write `deputy-blocked-<ticket>.*`, and re-check next
+  poll. The dashboard shows it as a grey **blocked** case.
+- **exactly one open blocker** -> `STACK`: branch the worktree off `origin/<parent>`
+  and tell the agent to open the PR with `--base <parent>`. A `deputy-stack-<ticket>.json`
+  records `{parent_branch, child_branch, last_parent_sha}`.
+
+`maintain_stacks` (each poll) keeps recorded stacks fresh, skipping any child that's
+working, parked, blocked, or checked out in your own worktree: when the parent's head
+moves it rebases the child onto it; when the parent **merges** it rebases the child onto
+`main` and retargets the PR base. The clean rebase force-pushes with `--force-with-lease`
+automatically; a conflict is aborted to a safe state and handed to the agent
+(`continue_ticket ... rebase`) to resolve. Disable the auto-rebase with
+`DEPUTY_STACK_AUTOSYNC=false` (stacking at creation still works).
+
 ## State
 
 All runtime state lives in `/tmp`:
@@ -94,12 +117,15 @@ deputy-queue-<repo>.jsonl                 pending continue/resume requests (drai
 deputy-ask-<ticket>.txt                   a parked case's question (present => needs your call)
 deputy-session-<ticket>.txt               the SDK session id, for resuming after a pause
 deputy-paused-<ticket>.meta               a parked case's owning repo
+deputy-blocked-<ticket>.meta / .txt       a dependency-blocked case: owning repo + reason
+deputy-stack-<ticket>.json                a stacked PR's parent/child branches + last parent sha
 ```
 
 ## Adding a tracker
 
 Each tracker is one small module in [`lib/trackers/`](lib/trackers/) implementing
-six methods: `listReady`, `getItem`, `markStarted`, `markDone`, `itemUrl`, `prRef`.
+six methods: `listReady`, `getItem`, `markStarted`, `markDone`, `itemUrl`, `prRef`
+(plus an optional `getBlockers` for stacked PRs).
 Drop in `linear.mjs`, register it in
 [`lib/trackers/index.mjs`](lib/trackers/index.mjs), and you're done. The daemon,
 the agent, and the dashboard are all tracker-agnostic. See

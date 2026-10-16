@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import github from '../lib/trackers/github-issues.mjs';
+import github, { blockersFromBody } from '../lib/trackers/github-issues.mjs';
 
 let calls, origFetch;
 function stub(router) {
@@ -82,4 +82,18 @@ test('markDone swaps in-progress for the in-review label', async () => {
 test('itemUrl and prRef', () => {
   assert.equal(github.itemUrl('5'), 'https://github.com/acme/app/issues/5');
   assert.equal(github.prRef('5'), 'Closes #5');
+});
+
+test('blockersFromBody parses "blocked by"/"depends on" issue refs and drops self', () => {
+  assert.deepEqual(blockersFromBody('Blocked by #12 and depends on #13', '5').sort(), ['12', '13']);
+  assert.deepEqual(blockersFromBody('after #5 only', '5'), []); // self-reference dropped
+  assert.deepEqual(blockersFromBody('no deps here', '5'), []);
+});
+
+test('getBlockers reads the issue body for dependencies', async () => {
+  stub((url) => {
+    assert.match(url, /\/issues\/5$/);
+    return { body: { title: 'Child', body: 'blocked by #4' } };
+  });
+  assert.deepEqual(await github.getBlockers('5'), ['4']);
 });

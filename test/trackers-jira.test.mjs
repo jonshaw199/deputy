@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import jira from '../lib/trackers/jira.mjs';
+import jira, { blockersFromIssue } from '../lib/trackers/jira.mjs';
 
 // Minimal fetch stub: `router(url, opts)` returns { ok, status, body }.
 let calls, origFetch;
@@ -97,4 +97,38 @@ test('markDone transitions to the done status and returns its name', async () =>
 test('itemUrl and prRef build browse links from the site URL', () => {
   assert.equal(jira.itemUrl('WEB-7'), 'https://acme.atlassian.net/browse/WEB-7');
   assert.equal(jira.prRef('WEB-7'), 'Jira: https://acme.atlassian.net/browse/WEB-7');
+});
+
+test('blockersFromIssue reads "is blocked by" issue links', () => {
+  const issue = { fields: { issuelinks: [
+    { type: { inward: 'is blocked by', outward: 'blocks' }, inwardIssue: { key: 'WEB-2' } },
+    { type: { inward: 'relates to', outward: 'relates to' }, inwardIssue: { key: 'WEB-9' } }, // ignored
+    { type: { inward: 'blocks', outward: 'is blocked by' }, outwardIssue: { key: 'WEB-3' } }, // we block it: ignored
+  ] } };
+  assert.deepEqual(blockersFromIssue(issue, 'WEB-1'), ['WEB-2']);
+});
+
+test('blockersFromIssue falls back to prose in description/summary', () => {
+  const issue = { fields: { summary: 'Add preferences (depends on WEB-5)', description: { content: [{ type: 'text', text: 'Blocked by WEB-4.' }] } } };
+  assert.deepEqual(blockersFromIssue(issue, 'WEB-1').sort(), ['WEB-4', 'WEB-5']);
+});
+
+test('blockersFromIssue dedupes and drops a self-reference', () => {
+  const issue = { fields: {
+    issuelinks: [{ type: { inward: 'is blocked by' }, inwardIssue: { key: 'WEB-2' } }],
+    summary: 'blocked by WEB-2 and after WEB-1', // WEB-2 dup, WEB-1 is self
+  } };
+  assert.deepEqual(blockersFromIssue(issue, 'WEB-1'), ['WEB-2']);
+});
+
+test('blockersFromIssue returns [] when there are no dependencies', () => {
+  assert.deepEqual(blockersFromIssue({ fields: { summary: 'standalone', issuelinks: [] } }, 'WEB-1'), []);
+});
+
+test('getBlockers fetches issue links/description and returns blocker keys', async () => {
+  stub((url) => {
+    assert.ok(/\/issue\/WEB-1\?fields=issuelinks,description,summary$/.test(url));
+    return { body: { fields: { issuelinks: [{ type: { inward: 'is blocked by' }, inwardIssue: { key: 'WEB-2' } }] } } };
+  });
+  assert.deepEqual(await jira.getBlockers('WEB-1'), ['WEB-2']);
 });

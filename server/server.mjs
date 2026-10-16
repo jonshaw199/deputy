@@ -98,6 +98,20 @@ export function makeServer(opts = {}) {
         return { ticket, project, phase: question, question, pr: prUrlIn(log), item: itemUrlIn(log), needsInput: true };
       });
   }
+  // Cases waiting on a dependency (a sibling ticket's PR): no live process, no PR yet.
+  // The daemon re-checks them each poll and starts them (stacked) once the parent has a branch.
+  function listBlocked() {
+    return readdirSync(TMP)
+      .map((f) => f.match(/^deputy-blocked-(.+)\.meta$/))
+      .filter(Boolean)
+      .map((m) => {
+        const ticket = m[1];
+        const reason = tail(join(TMP, `deputy-blocked-${ticket}.txt`)).trim() || 'waiting on a dependency';
+        const log = tail(join(TMP, `deputy-item-${ticket}.log`));
+        const project = tail(join(TMP, `deputy-blocked-${ticket}.meta`)).trim() || null;
+        return { ticket, project, state: 'blocked', phase: reason, item: itemUrlIn(log) };
+      });
+  }
   // Open PRs + unresolved review comments the daemon published (deputy never replies).
   const readPrs = (project) => {
     try { return JSON.parse(readFileSync(join(TMP, `deputy-prs-${project}.json`), 'utf8')); } catch { return []; }
@@ -120,9 +134,10 @@ export function makeServer(opts = {}) {
   // Fold live agents and open PRs into one case per ticket. A ticket with a live
   // agent is working / needs-input (and keeps its PR + comments if it has one); a
   // ticket with only an open PR is in-review. Live cases first, then in-review.
-  function mergeCases(live, prs, project) {
+  function mergeCases(live, prs, blocked, project) {
     const byTicket = new Map();
     for (const a of live) byTicket.set(a.ticket, { ...a, state: a.needsInput ? 'needs-input' : 'working' });
+    for (const b of blocked) if (!byTicket.has(b.ticket)) byTicket.set(b.ticket, b);
     for (const p of prs) {
       const key = p.ticket || `PR-${p.number}`;
       const ex = byTicket.get(p.ticket);
@@ -149,9 +164,10 @@ export function makeServer(opts = {}) {
     if (path === '/api/status') {
       const daemons = listDaemons();
       const live = liveOrPaused();
-      // One case per ticket: a live agent (working / needs-input) and its open PR
-      // (in-review, with review comments) are the same ticket, merged here.
-      for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), d.project);
+      const blocked = listBlocked();
+      // One case per ticket: a live agent (working / needs-input), a dependency-blocked
+      // case waiting to start, and its open PR (in-review) are the same ticket, merged here.
+      for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), blocked.filter((b) => b.project === d.project), d.project);
       const orphans = live.filter((a) => !daemons.some((d) => d.project === a.project))
         .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working', auto: isAuto(a.ticket) }));
       return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });

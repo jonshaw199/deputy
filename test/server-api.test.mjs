@@ -26,6 +26,10 @@ before(async () => {
   writeFileSync(join(dir, 'deputy-paused-DEMO-2.meta'), 'api');
   writeFileSync(join(dir, 'deputy-session-DEMO-2.txt'), 'sess-xyz');
   writeFileSync(join(dir, 'deputy-item-DEMO-2.log'), '[NEEDS-INPUT] Muted illustration or a text prompt for the empty state?\n');
+  // A dependency-blocked case waiting on a sibling's branch (no live process, no PR).
+  writeFileSync(join(dir, 'deputy-blocked-WEB-500.meta'), 'webapp');
+  writeFileSync(join(dir, 'deputy-blocked-WEB-500.txt'), 'WEB-499 not started yet');
+  writeFileSync(join(dir, 'deputy-item-WEB-500.log'), 'ITEM_URL: https://acme.atlassian.net/browse/WEB-500\n');
   // Open PRs the daemon published: one in review with comments, one whose ticket is a live case.
   writeFileSync(join(dir, 'deputy-prs-webapp.json'), JSON.stringify([
     { number: 482, title: 'feat: empty state [WEB-290]', url: 'https://x/pull/482', branch: 'dev/web-290', ticket: 'WEB-290', comments: [{ author: 'alex', path: 'a.ts', line: 44, body: 'debounce this', url: 'https://x/482#r1' }] },
@@ -88,6 +92,15 @@ test('GET /api/status folds a ticket PR into its live case and adds PR-only tick
   assert.equal(web.state, 'in-review');
   assert.equal(web.comments.length, 1);
   assert.equal(web.branch, 'dev/web-290');
+});
+
+test('GET /api/status surfaces a dependency-blocked case with its reason and ticket link', async () => {
+  const s = await (await get('/api/status')).json();
+  const web = s.daemons.find((x) => x.project === 'webapp');
+  const blocked = web.cases.find((c) => c.ticket === 'WEB-500');
+  assert.equal(blocked.state, 'blocked');
+  assert.match(blocked.phase, /WEB-499 not started/);
+  assert.equal(blocked.item, 'https://acme.atlassian.net/browse/WEB-500');
 });
 
 test('POST /api/continue queues a follow-up carrying the PR branch', async () => {

@@ -152,6 +152,9 @@ function watch_and_process() {
     # Fix red CI on deputy's own PRs.
     check_for_ci_failures
 
+    # Keep stacked (dependent) PRs rebased as their parent branches move or merge.
+    maintain_stacks
+
     # Publish open PRs + unresolved review comments for the dashboard (deputy never replies).
     # Write to a temp file and move it into place atomically so the dashboard never reads a
     # half-written/empty file mid-poll (which made in-review cases flicker). Keep the old file
@@ -206,11 +209,12 @@ function run_agent() {
       timeout "$CLAUDE_TIMEOUT_SECONDS" bash -c "$AGENT_CMD" >> "$lf" 2>&1 )
 }
 
-# continue_ticket <ticket_id> <prompt> <cont_id> [branch]
+# continue_ticket <ticket_id> <prompt> <cont_id> [branch] [mode]
 # Re-enters an existing PR's branch to do follow-up work (CI fix or a local request).
 # Pass [branch] to target a specific PR branch (e.g. a random-named collaboration branch).
+# mode=rebase runs the given prompt verbatim (for a stack rebase; the prompt force-pushes).
 function continue_ticket() {
-  local ticket_id=$1 continuation_prompt=$2 cont_id=$3 branch_override=$4
+  local ticket_id=$1 continuation_prompt=$2 cont_id=$3 branch_override=$4 mode=$5
   local log_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.log"
   local lock_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.lock"
   local meta_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.meta"  # so the case nests under its deputy
@@ -247,7 +251,14 @@ function continue_ticket() {
   setup_worktree "$ticket_worktree" "$log_file"
 
   local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
-  local prompt="Continue work on item $ticket_id.
+  local prompt
+  if [ "$mode" = "rebase" ]; then
+    prompt="$continuation_prompt
+
+**Context:** You are in worktree $ticket_worktree on branch $branch_name (already checked out).
+**Constraints:** Stay in the current directory (pwd). Do NOT use the Agent/Task tool."
+  else
+  prompt="Continue work on item $ticket_id.
 
 **Request:**
 $continuation_prompt
@@ -268,6 +279,7 @@ ${item_url:+
 3. Commit with a descriptive message and push to origin/$branch_name.
 
 Work autonomously. Report what you did."
+  fi
 
   echo "[$(date)] Starting continuation agent for $ticket_id..." >> "$log_file"
   run_agent "$ticket_worktree" "$prompt" "$log_file"
@@ -343,6 +355,119 @@ Triage each failing check before changing anything:
   done <<< "$rows"
 }
 
+# True when a branch is checked out in a worktree other than the main repo (you're in it).
+function branch_checked_out_elsewhere() {
+  local branch=$1
+  cd "$MAIN_PROJECT_DIR" && git worktree list --porcelain \
+    | awk -v b="refs/heads/$branch" '/^worktree /{w=substr($0,10)} $0=="branch " b{print w}' \
+    | grep -qv "^$MAIN_PROJECT_DIR\$"
+}
+
+# resync_stack <ticket> <parent_branch> <child_branch> <oldbase_sha> <newbase_ref> <update|retarget>
+# Rebases a stacked child so it sits on the current parent (or on main once the parent
+# merged). Clean rebase -> force-push automatically; a conflict is handed to the agent.
+function resync_stack() {
+  local ticket_id=$1 parent_branch=$2 child_branch=$3 oldbase=$4 newbase_ref=$5 mode=$6
+  local lock_file="/tmp/deputy-item-${ticket_id}-cont-sync.lock"
+  local meta_file="/tmp/deputy-item-${ticket_id}-cont-sync.meta"
+  local log_file="/tmp/deputy-item-${ticket_id}-cont-sync.log"
+  local sf="/tmp/deputy-stack-${ticket_id}.json"
+  local wt="${AUTOMATION_BASE_DIR}_${ticket_id}_sync"
+  echo "$PROJECT_NAME" > "$meta_file"
+  trap "rm -f '$lock_file' '$meta_file'" EXIT
+
+  echo "[$(date)] Rebase $child_branch --onto $newbase_ref (drop $oldbase, mode=$mode)" > "$log_file"
+  cd "$MAIN_PROJECT_DIR" || { rm -f "$lock_file"; return 1; }
+  git worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$wt" 2>/dev/null || true
+  git worktree prune 2>/dev/null || true
+  git fetch origin "$child_branch" >> "$log_file" 2>&1 || true
+  git fetch origin main >> "$log_file" 2>&1 || true
+  [ "$mode" = "update" ] && { git fetch origin "$parent_branch" >> "$log_file" 2>&1 || true; }
+
+  if ! git worktree add -B "$child_branch" "$wt" "origin/$child_branch" >> "$log_file" 2>&1; then
+    echo "[$(date)] Stack resync FAILED: $ticket_id (cannot checkout $child_branch)" >> "$DAEMON_LOG_FILE"
+    return 1
+  fi
+  setup_worktree "$wt" "$log_file"
+
+  # Retarget the PR base first (idempotent); the diff tidies once the rebased branch lands.
+  [ "$mode" = "retarget" ] && { (cd "$MAIN_PROJECT_DIR" && gh pr edit "$child_branch" --base main >> "$log_file" 2>&1) || true; }
+
+  if git -C "$wt" rebase --onto "$newbase_ref" "$oldbase" >> "$log_file" 2>&1; then
+    git -C "$wt" push --force-with-lease origin "$child_branch" >> "$log_file" 2>&1
+    if [ "$mode" = "retarget" ]; then
+      rm -f "$sf"
+      echo "[$(date)] Stack: $ticket_id rebased onto main + PR retargeted (parent $parent_branch merged)" >> "$DAEMON_LOG_FILE"
+    else
+      local newsha; newsha=$(git -C "$wt" rev-parse "$newbase_ref" 2>/dev/null)
+      jq --arg s "$newsha" '.last_parent_sha=$s' "$sf" > "${sf}.tmp" 2>/dev/null && mv -f "${sf}.tmp" "$sf"
+      echo "[$(date)] Stack: $ticket_id rebased on updated $parent_branch @ ${newsha:0:8}" >> "$DAEMON_LOG_FILE"
+    fi
+    cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+    git worktree prune 2>/dev/null || true
+  else
+    # Rare: the rebase conflicts. Abort to a clean state and hand it to the agent to resolve.
+    git -C "$wt" rebase --abort >> "$log_file" 2>&1 || true
+    cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+    git worktree prune 2>/dev/null || true
+    echo "[$(date)] Stack: $ticket_id rebase conflicted; handing to the agent" >> "$DAEMON_LOG_FILE"
+    local target_base="$newbase_ref"; [ "$mode" = "retarget" ] && target_base="origin/main"
+    local rp="Rebase branch $child_branch so it sits cleanly on top of $target_base.
+
+Run \`git fetch origin\`, then \`git rebase --onto $target_base $oldbase $child_branch\`.
+Resolve every merge conflict (this branch's own changes MUST survive), run the relevant tests,
+then \`git push --force-with-lease origin $child_branch\`. If you cannot resolve the conflicts
+safely, run \`git rebase --abort\`, do NOT push, and clearly report that a human is needed."
+    trap - EXIT; rm -f "$meta_file"
+    continue_ticket "$ticket_id" "$rp" "sync" "$child_branch" rebase & echo $! > "$lock_file"
+    return 0
+  fi
+  trap - EXIT; rm -f "$lock_file" "$meta_file"
+}
+
+# Keeps stacked children fresh: when a parent branch moves, rebase the child on it; when a
+# parent merges, rebase the child onto main and retarget its PR. Skips children that are
+# busy, parked, blocked, or checked out in your own worktree (never rebase under you).
+function maintain_stacks() {
+  [ "${DEPUTY_STACK_AUTOSYNC:-true}" = "true" ] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  local sf ticket sproj parent_branch child_branch oldbase
+  for sf in /tmp/deputy-stack-*.json; do
+    [ -f "$sf" ] || continue
+    sproj=$(jq -r '.project // empty' "$sf" 2>/dev/null)
+    [ "$sproj" = "$PROJECT_NAME" ] || continue
+    ticket=$(basename "$sf" .json | sed 's/^deputy-stack-//')
+
+    # Don't touch a child that is actively working, parked, or blocked.
+    local clock="/tmp/deputy-item-${ticket}.lock" synclock="/tmp/deputy-item-${ticket}-cont-sync.lock"
+    { [ -f "$clock" ] && kill -0 "$(cat "$clock" 2>/dev/null)" 2>/dev/null; } && continue
+    { [ -f "$synclock" ] && kill -0 "$(cat "$synclock" 2>/dev/null)" 2>/dev/null; } && continue
+    [ -f "/tmp/deputy-ask-${ticket}.txt" ] && continue
+    [ -f "/tmp/deputy-blocked-${ticket}.meta" ] && continue
+
+    parent_branch=$(jq -r '.parent_branch // empty' "$sf")
+    child_branch=$(jq -r '.child_branch // empty' "$sf")
+    oldbase=$(jq -r '.last_parent_sha // empty' "$sf")
+    { [ -z "$parent_branch" ] || [ -z "$child_branch" ] || [ -z "$oldbase" ]; } && continue
+    branch_checked_out_elsewhere "$child_branch" && continue  # you're collaborating in it
+
+    # Child PR gone/merged -> stack is done.
+    local child_open; child_open=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$child_branch" --state open --json number --jq 'length' 2>/dev/null)
+    if [ "${child_open:-0}" = "0" ]; then rm -f "$sf"; continue; fi
+
+    local parent_json; parent_json=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$parent_branch" --state all --json state,headRefOid --jq '.[0] // {}' 2>/dev/null)
+    local pstate psha
+    pstate=$(echo "$parent_json" | jq -r '.state // empty' 2>/dev/null)
+    psha=$(echo "$parent_json" | jq -r '.headRefOid // empty' 2>/dev/null)
+
+    if [ "$pstate" = "MERGED" ]; then
+      resync_stack "$ticket" "$parent_branch" "$child_branch" "$oldbase" "origin/main" retarget & echo $! > "$synclock"
+    elif [ "$pstate" = "OPEN" ] && [ -n "$psha" ] && [ "$psha" != "$oldbase" ]; then
+      resync_stack "$ticket" "$parent_branch" "$child_branch" "$oldbase" "origin/$parent_branch" update & echo $! > "$synclock"
+    fi
+  done
+}
+
 # Drains local "do X next" requests (CLI or dashboard) into the continue engine.
 function drain_continue_queue() {
   [ -s "$QUEUE_FILE" ] || return 0
@@ -404,6 +529,36 @@ function detect_user_worktree() {
     | grep -v "^$MAIN_PROJECT_DIR\$" | head -1
 }
 
+# resolve_base_ref <ticket_id> <log_file>
+# Decides what a ticket's work should be based on, from its blockers' PR state.
+# Prints exactly one line: "MAIN", "WAIT|<reason>", or "STACK|<parent_ticket>|<parent_branch>".
+#   - no blockers / all blockers merged      -> MAIN   (build off origin/main)
+#   - a blocker has no PR yet (not started)  -> WAIT   (recheck next poll)
+#   - >1 blocker still open (can't stack 2)  -> WAIT
+#   - exactly one blocker open with a branch -> STACK on that branch
+function resolve_base_ref() {
+  local ticket_id=$1 log_file=$2
+  local blockers; blockers=$(node "$TRACKER_CLI" blockers "$ticket_id" 2>>"$log_file")
+  [ -z "$blockers" ] && { echo "MAIN"; return; }
+  command -v gh >/dev/null 2>&1 || { echo "MAIN"; return; }  # can't inspect PRs; don't block work
+
+  local open_count=0 parent_ticket="" parent_branch=""
+  local b prs merged branch
+  for b in $blockers; do
+    prs=$(cd "$MAIN_PROJECT_DIR" && gh pr list --search "$b" --state all --json headRefName,state 2>/dev/null)
+    [ -z "$prs" ] && prs='[]'
+    merged=$(echo "$prs" | jq -r 'any(.[]; .state=="MERGED")' 2>/dev/null)
+    [ "$merged" = "true" ] && continue                       # blocker already landed on main
+    branch=$(echo "$prs" | jq -r 'map(select(.state=="OPEN"))[0].headRefName // empty' 2>/dev/null)
+    if [ -z "$branch" ]; then echo "WAIT|$b not started yet"; return; fi
+    open_count=$((open_count + 1)); parent_ticket="$b"; parent_branch="$branch"
+  done
+
+  if [ "$open_count" -eq 0 ]; then echo "MAIN"
+  elif [ "$open_count" -eq 1 ]; then echo "STACK|$parent_ticket|$parent_branch"
+  else echo "WAIT|waiting on $open_count unmerged dependencies"; fi
+}
+
 function process_ticket() {
   local ticket_id=$1
   local log_file="/tmp/deputy-item-${ticket_id}.log"
@@ -413,6 +568,32 @@ function process_ticket() {
   local meta_file="/tmp/deputy-item-${ticket_id}.meta"      # which deputy (repo) this case belongs to
   local ask_file="/tmp/deputy-ask-${ticket_id}.txt"
   local session_file="/tmp/deputy-session-${ticket_id}.txt"
+  local blocked_meta="/tmp/deputy-blocked-${ticket_id}.meta"
+  local stack_file="/tmp/deputy-stack-${ticket_id}.json"
+
+  # --- Dependency gate (stacked PRs) -------------------------------------------
+  # Decide the base BEFORE marking started, so a blocked ticket keeps its label and
+  # gets re-checked on the next poll. We don't hold a lock while blocked.
+  echo "[$(date)] Resolving dependencies for $ticket_id..." > "$log_file"
+  local base; base=$(resolve_base_ref "$ticket_id" "$log_file")
+  local base_kind="${base%%|*}" stack_branch="" stack_parent=""
+  if [ "$base_kind" = "WAIT" ]; then
+    local reason="${base#WAIT|}"
+    echo "$PROJECT_NAME" > "$blocked_meta"
+    echo "$reason" > "/tmp/deputy-blocked-${ticket_id}.txt"
+    local burl; burl=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
+    [ -n "$burl" ] && echo "[$(date)] ITEM_URL: $burl" >> "$log_file"
+    echo "[$(date)] BLOCKED: $ticket_id ($reason)" >> "$DAEMON_LOG_FILE"
+    echo "[$(date)] Blocked: $reason. Will re-check next patrol." >> "$log_file"
+    rm -f "$lock_file"
+    return 0
+  fi
+  rm -f "$blocked_meta" "/tmp/deputy-blocked-${ticket_id}.txt"
+  if [ "$base_kind" = "STACK" ]; then
+    stack_parent=$(echo "$base" | cut -d'|' -f2)
+    stack_branch=$(echo "$base" | cut -d'|' -f3)
+  fi
+
   : > "$input_file"
   echo "$PROJECT_NAME" > "$meta_file"
   rm -f "$ask_file" "$session_file" "/tmp/deputy-paused-${ticket_id}.meta"
@@ -420,7 +601,7 @@ function process_ticket() {
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
 
-  echo "[$(date)] Starting work on $ticket_id" > "$log_file"
+  echo "[$(date)] Starting work on $ticket_id" >> "$log_file"
 
   # Mark started immediately so the next poll does not re-pick it.
   echo "[$(date)] Marking $ticket_id started..." >> "$log_file"
@@ -441,13 +622,20 @@ function process_ticket() {
     export DEPUTY_SDK_DIR="$AUTOMATION_BASE_DIR/node_modules"
     echo "[$(date)] Collaborating in your worktree: $user_wt" >> "$log_file"
   else
-    echo "[$(date)] Creating worktree for $ticket_id..." >> "$log_file"
+    # Stacked tickets branch off their blocker's branch; everything else off origin/main.
+    local base_commit="origin/main"
+    if [ -n "$stack_branch" ]; then
+      base_commit="origin/$stack_branch"
+      git fetch origin "$stack_branch" >> "$log_file" 2>&1 || true
+      echo "[$(date)] Stacking $ticket_id on $stack_branch" >> "$log_file"
+    fi
+    echo "[$(date)] Creating worktree for $ticket_id (base: $base_commit)..." >> "$log_file"
     if [ -d "$ticket_worktree" ]; then
       git worktree remove --force "$ticket_worktree" 2>/dev/null || true
       rm -rf "$ticket_worktree" 2>/dev/null || true
     fi
     git worktree prune 2>/dev/null || true
-    if ! git worktree add --detach "$ticket_worktree" origin/main >> "$log_file" 2>&1; then
+    if ! git worktree add --detach "$ticket_worktree" "$base_commit" >> "$log_file" 2>&1; then
       echo "[$(date)] FAILED: $ticket_id (worktree creation failed)" >> "$DAEMON_LOG_FILE"
       rm -f "$lock_file"; return 1
     fi
@@ -458,6 +646,14 @@ function process_ticket() {
   local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
   local pr_ref;   pr_ref=$(node "$TRACKER_CLI" ref "$ticket_id" 2>/dev/null)
   [ -n "$item_url" ] && echo "[$(date)] ITEM_URL: $item_url" >> "$log_file"
+
+  # When stacked, the PR must target the parent's branch (not main) so its diff is just our changes.
+  local pr_base_flag="" stack_note=""
+  if [ -n "$stack_branch" ]; then
+    pr_base_flag=" --base \"$stack_branch\""
+    stack_note="
+**STACKED PR:** This ticket depends on a sibling whose work lives on branch \`$stack_branch\`. You are branched off it, so your diff should be ONLY your own changes on top. When you open the PR you MUST pass \`--base $stack_branch\` (included below) so GitHub stacks it correctly."
+  fi
 
   local prompt
   if [ "$collaborating" -eq 1 ]; then
@@ -494,7 +690,7 @@ Work autonomously. When done, report what you did."
   prompt="Implement work item $ticket_id
 
 **IMPORTANT:** You are in an isolated git worktree at $ticket_worktree on a detached HEAD. DO NOT cd elsewhere. All commands run in the current directory (pwd).
-
+${stack_note}
 ${item_url:+**Work item:** $item_url}
 
 **CRITICAL CONSTRAINTS:**
@@ -514,7 +710,7 @@ ${item_url:+**Work item:** $item_url}
 7. Create branch from current commit: git branch $branch_name
 8. Push branch to origin: git push origin $branch_name
 9. Create a draft PR with gh CLI, labelled so deputy can watch its CI:
-   - \`gh pr create --draft --label \"$PR_LABEL\" --title \"<type>: <summary> [$ticket_id]\" ...\`${pr_ref:+
+   - \`gh pr create --draft --label \"$PR_LABEL\"${pr_base_flag} --title \"<type>: <summary> [$ticket_id]\" ...\`${pr_ref:+
    - Body should include: \"$pr_ref\"}
 10. Mark the work item done with \`mcp__tracker__finish\` (itemId: $ticket_id)
 
@@ -549,6 +745,14 @@ Work autonomously. When done, report the PR URL."
     echo "[$(date)] FAILED: $ticket_id (exit $exit_code)" >> "$DAEMON_LOG_FILE"
   else
     echo "[$(date)] SUCCESS: $ticket_id" >> "$DAEMON_LOG_FILE"
+  fi
+
+  # Record a stacked PR so maintain_stacks keeps it rebased as the parent moves/merges.
+  if [ -n "$stack_branch" ] && grep -qiE 'github\.com/[^ ]+/pull/[0-9]+' "$log_file"; then
+    local psha; psha=$(cd "$MAIN_PROJECT_DIR" && git rev-parse "origin/$stack_branch" 2>/dev/null)
+    jq -nc --arg p "$PROJECT_NAME" --arg pt "$stack_parent" --arg pb "$stack_branch" --arg cb "$branch_name" --arg s "$psha" \
+      '{project:$p, parent_ticket:$pt, parent_branch:$pb, child_branch:$cb, last_parent_sha:$s}' > "$stack_file"
+    echo "[$(date)] Stack recorded: $ticket_id ($branch_name) on $stack_branch @ ${psha:0:8}" >> "$DAEMON_LOG_FILE"
   fi
 
   if [ "$collaborating" -eq 1 ]; then
@@ -631,8 +835,10 @@ function stop_ticket() {
     rm -f "$lf" "${lf%.lock}.meta"
   done
 
-  # Clear any parked-for-input state too.
-  for f in "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-session-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta"; do
+  # Clear any parked-for-input, blocked, or stack-tracking state too.
+  for f in "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-session-${ticket_id}.txt" \
+           "/tmp/deputy-paused-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.meta" \
+           "/tmp/deputy-blocked-${ticket_id}.txt" "/tmp/deputy-stack-${ticket_id}.json"; do
     [ -f "$f" ] && { rm -f "$f"; killed=1; }
   done
 

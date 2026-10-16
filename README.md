@@ -53,6 +53,12 @@ worktree (or the one you already have open, if you're collaborating).
   worktree, the deputy finds it (via the ticket's PR) and works in *your* worktree on
   *your* branch, pushing to the same PR, instead of starting its own. Hit "stop"
   to take the keys back. No branch-naming convention needed.
+- **Stacks dependent tickets** — label a whole epic `ai-ready` at once. Each deputy reads
+  its ticket's "blocked by" links (or prose): if a dependency has no branch yet the case
+  waits (shown **blocked**); once the parent has an open PR, the deputy branches off it and
+  opens a **stacked** PR, so siblings move in parallel. It keeps each child rebased as the
+  parent branch moves, and rebases onto `main` + retargets the PR when the parent merges —
+  handing the rare conflict to the agent to resolve.
 - **Pluggable trackers** — Jira and GitHub Issues built in; add another in ~80 lines.
 - **Not locked to Claude** — the agent is a swappable command (`DEPUTY_AGENT_CMD`).
 - **Isolated by default** — a fresh git worktree per item, off `origin/main` on a
@@ -60,8 +66,8 @@ worktree (or the one you already have open, if you're collaborating).
   collaborating on a branch you already have open, see above).
 - **Concurrent** — processes multiple items at once, each fully sandboxed.
 - **Live dashboard** — deputies on patrol, each ticket shown as one case at its stage
-  (working / needs your call / in review) with a streaming log, live chat, the 🔫
-  full-auto toggle, and one-click deputize / stand down.
+  (working / needs your call / blocked / in review) with a streaming log, live chat, the
+  🔫 full-auto toggle, and one-click deputize / stand down.
 - **Zero company lock-in** — all config lives in `.env`; the repo carries no
   secrets and nothing employer-specific. Fork it, point it anywhere.
 
@@ -174,12 +180,6 @@ a GitHub token. Notable knobs:
 - `DEPUTY_WORKTREE_SETUP` — command run in each fresh worktree, e.g. `bundle install && yarn install` (so tests/hooks pass)
 - `DEPUTY_AGENT_CMD` — the agent command; defaults to the bundled Claude runner, swap for any other
 - `DEPUTY_PR_LABEL` — label put on deputy PRs (also how CI auto-fix finds them)
-
-## Roadmap
-
-- **Stacked PRs** — when one ticket is blocked by another, base the dependent ticket's
-  worktree + PR on the parent's branch (read the tracker's "blocked by" link) so both
-  can move at once, with the stack rebased as the parent changes.
 
 ## Contributing
 

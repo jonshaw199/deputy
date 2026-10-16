@@ -24,6 +24,7 @@ function badge(outcome) {
 // Clicking opens the live chat for a live agent, or the PR's review comments in-review.
 function caseRow(c) {
   const review = c.state === 'in-review';
+  const blocked = c.state === 'blocked';
   const live = !review;
   const n = (c.comments || []).length;
   const chip = n ? `<span class="chip">💬 ${n}</span>` : '';
@@ -32,16 +33,19 @@ function caseRow(c) {
     c.pr ? `<a href="${c.pr}" target="_blank">PR</a>` : '',
   ].filter(Boolean).join(' · ');
 
-  // One colour per state: blue = working, amber = needs your call, green = in review.
-  const dot = c.state === 'needs-input' ? 'warn' : review ? 'ok' : 'busy';
-  const dotTitle = c.state === 'needs-input' ? 'Needs your call' : review ? 'In review' : 'Working';
+  // One colour per state: blue = working, amber = needs your call, grey = blocked, green = in review.
+  const dot = c.state === 'needs-input' ? 'warn' : blocked ? 'wait' : review ? 'ok' : 'busy';
+  const dotTitle = c.state === 'needs-input' ? 'Needs your call'
+    : blocked ? 'Blocked — waiting on a dependency' : review ? 'In review' : 'Working';
   const detail = c.state === 'needs-input'
     ? `<div class="sub question">📻 <b>Needs your call:</b> ${trunc(c.question, 220)}</div>`
+    : blocked
+    ? `<div class="sub blocked-note">⛓️ <b>Blocked:</b> ${trunc(c.phase, 200)} <span class="muted">· will start once its dependency has a branch</span></div>`
     : `<div class="sub">${trunc(review ? c.title : c.phase, 180)}</div>`;
 
   const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: don't ask me questions, just decide and keep going">${GUN}</span>`;
-  // ✕ on every case: stops a live agent, or dismisses a finished in-review case from the board.
-  const xTitle = live ? 'Stop: halt the agent (keeps the worktree)' : 'Hide this finished case (comes back only if a new review comment lands)';
+  // ✕ on every case: stops a live agent, drops a blocked one, or dismisses a finished in-review case.
+  const xTitle = blocked ? 'Drop this blocked case' : live ? 'Stop: halt the agent (keeps the worktree)' : 'Hide this finished case (comes back only if a new review comment lands)';
   const stop = `<span class="iconbtn danger" data-x title="${xTitle}">${X_ICON}</span>`;
   const row = el('div', c.state === 'needs-input' ? 'case needs-input' : 'case');
   row.innerHTML = `
@@ -57,14 +61,15 @@ function caseRow(c) {
   };
   row.onclick = review
     ? () => openLog({ pr: { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] }, project: c.project }, `${c.ticket} · review`)
-    : () => openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input' }, `${c.ticket} · case log`);
+    : () => openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input', blocked }, `${c.ticket} · case log`);
   row.querySelector('[data-x]').onclick = async (e) => {
     e.stopPropagation();
     if (review) {
       if (!confirm(`Hide ${c.ticket}? It's in review with nothing to do; it'll reappear only if a new review comment lands.`)) return;
       await api('/api/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, commentUrls: (c.comments || []).map((x) => x.url) }) });
     } else {
-      if (!confirm(`Stop ${c.ticket}? (halts the agent; keeps the worktree)`)) return;
+      const msg = blocked ? `Drop blocked case ${c.ticket}? It will no longer be tracked until it's labelled again.` : `Stop ${c.ticket}? (halts the agent; keeps the worktree)`;
+      if (!confirm(msg)) return;
       await api('/api/stop-case', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket }) });
     }
     refresh();
@@ -79,7 +84,8 @@ function renderDeputies(daemons, orphans) {
   if (!daemons.length) wrap.append(el('div', 'muted', '🤠 No deputies on patrol. Deputize a repo above, or start one from the CLI.'));
   for (const d of daemons) {
     const cases = d.cases || [];
-    const working = cases.filter((c) => c.state !== 'in-review').length;
+    const blockedCount = cases.filter((c) => c.state === 'blocked').length;
+    const working = cases.filter((c) => c.state !== 'in-review' && c.state !== 'blocked').length;
     const review = cases.filter((c) => c.state === 'in-review').length;
     const card = el('div', 'card');
     const dot = !d.running ? 'off' : working ? 'busy' : 'ok';
@@ -89,6 +95,7 @@ function renderDeputies(daemons, orphans) {
       const parts = [];
       if (working) parts.push(`on ${working} case${working > 1 ? 's' : ''}`);
       if (review) parts.push(`${review} in review`);
+      if (blockedCount) parts.push(`${blockedCount} blocked`);
       status = parts.join(' · ') || 'on patrol';
     }
     card.append(el('div', 'row', `
@@ -158,7 +165,7 @@ async function openLog(target, title) {
   logTarget = target;
   pendingEcho = ''; pendingResume = false;
   $('#logTitle').textContent = title;
-  const canReply = !!(target.ticket || target.pr);
+  const canReply = !!((target.ticket && !target.blocked) || target.pr);
   $('#logReply').classList.toggle('hidden', !canReply);
   if (target.ticket) $('#replyInput').placeholder = target.needsInput ? 'Answer the deputy…' : 'Reply to this agent…';
   if (target.pr) $('#replyInput').placeholder = (target.pr.comments || []).length ? 'Extra guidance (optional)…' : 'Tell Deputy what to do…';
