@@ -77,7 +77,7 @@ bin/daemon stop-ticket <TICKET>                              # cancel one in-fli
 ## Day to day
 
 1. **Post a deputy** to a repo — `Deputize` it in the dashboard, or `cd <repo> && /path/to/deputy/bin/daemon start`.
-2. **Hand it a case** — label a ticket `ai-ready` and move it to the ready state (Jira: `Groomed`; GitHub Issues: just the label). The deputy picks it up on its next patrol (≤ `CHECK_INTERVAL`).
+2. **Hand it a case** — just label a ticket `ai-ready` (Jira or GitHub Issues; status/column doesn't matter). The deputy picks it up on its next patrol (≤ `CHECK_INTERVAL`) and removes the label so it isn't grabbed twice.
 3. **Watch it work** — open the dashboard (`npm run dashboard` → http://localhost:4319). The case shows under its deputy with a streaming log.
 4. **Steer it live** — open the case and type in the reply box; it answers in the same session.
 5. **It finishes on its own** — opens a draft PR and advances the ticket. If the PR's CI goes red, it fixes it automatically.
@@ -98,10 +98,10 @@ bin/daemon stop-ticket <TICKET>                              # cancel one in-fli
 
 Pick where work comes from with `DEPUTY_TRACKER`:
 
-| Tracker  | Polls                      | "started" / "done"        |
-|----------|----------------------------|---------------------------|
-| `jira`   | JQL: label + status        | moves the ticket's status |
-| `github` | open issues with a label   | swaps labels              |
+| Tracker  | Polls                          | "started" / "done"                |
+|----------|--------------------------------|-----------------------------------|
+| `jira`   | any ticket with the label      | removes the label, moves status   |
+| `github` | open issues with the label     | swaps labels                      |
 
 Each tracker is one small module in [`lib/trackers/`](lib/trackers/) implementing
 six methods — `listReady`, `getItem`, `markStarted`, `markDone`, `itemUrl`,
