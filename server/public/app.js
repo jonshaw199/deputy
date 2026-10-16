@@ -90,9 +90,16 @@ async function refresh() {
     $('#globalDot').className = `dot ${open ? 'busy' : running ? 'ok' : 'off'}`;
     $('#updated').textContent = `${running} deput${running === 1 ? 'y' : 'ies'} · ${open} open case${open === 1 ? '' : 's'} · ${new Date().toLocaleTimeString()}`;
 
+    // Dropdown = repos without a deputy already on patrol; rebuilt only when it changes.
     const sel = $('#repoSelect');
-    if (sel.options.length <= 1 && s.repos.length) {
-      for (const r of s.repos) sel.append(new Option(r.split('/').pop() + '  (' + r + ')', r));
+    const runningRepos = new Set(s.daemons.filter((d) => d.running).map((d) => d.repoDir));
+    const avail = (s.repos || []).filter((r) => !runningRepos.has(r));
+    const want = avail.join('|');
+    if (sel.dataset.repos !== want) {
+      sel.dataset.repos = want;
+      sel.innerHTML = '';
+      sel.append(new Option(avail.length ? 'Deputize a repo…' : 'All repos have a deputy', ''));
+      for (const r of avail) sel.append(new Option(r.split('/').pop(), r));
     }
     renderDeputies(s.daemons, s.orphans);
     if (logTarget) refreshLog();
