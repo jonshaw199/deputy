@@ -14,6 +14,13 @@ Comes with a live web dashboard.
 
 ---
 
+## The idea
+
+**You're the sheriff.** You *deputize* a repo and a **deputy** patrols it, watching
+for ready tickets. When it finds one it takes the **case** — spins up an isolated
+worktree, writes the code, and opens a draft PR. You can watch any deputy work and
+**chat with it live** from the dashboard, and it **fixes its own red CI**.
+
 ## Why
 
 You label a ticket `ai-ready`. A few minutes later there's a draft PR waiting for
@@ -27,15 +34,15 @@ you're working on.
 - **Fully autonomous loop** — poll → implement → push → draft PR → advance the item.
 - **Fixes its own CI** — watches its PRs; when CI goes red it pulls the failures +
   annotations and pushes a fix automatically.
-- **Follow-ups without leaving the terminal** — tell it "do X next" on any ticket's
-  PR from the dashboard box or `deputy continue <TICKET> "…"`. No PR/Jira comments.
+- **Chat with any deputy live** — open a case and talk to the agent mid-run; it keeps
+  full context (💬 case log). Or `deputy continue <TICKET> "…"`. No PR/Jira comments.
 - **Pluggable trackers** — Jira and GitHub Issues built in; add another in ~80 lines.
 - **Not locked to Claude** — the agent is a swappable command (`DEPUTY_AGENT_CMD`).
 - **Isolated by construction** — one git worktree per item, off `origin/main`,
   on a detached HEAD, with its own deps installed. Your working tree is never touched.
 - **Concurrent** — processes multiple items at once, each fully sandboxed.
-- **Live dashboard** — every daemon, what it's working on now (streaming logs),
-  recent PRs, Start/Stop, and a "tell deputy" box.
+- **Live dashboard** — deputies on patrol, their open cases nested beneath with
+  streaming logs + live chat, recent cases, and one-click deputize / stand down.
 - **Zero company lock-in** — all config lives in `.env`; the repo carries no
   secrets and nothing employer-specific. Fork it, point it anywhere.
 

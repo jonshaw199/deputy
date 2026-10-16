@@ -24,10 +24,12 @@ function caseRow(c) {
   ].filter(Boolean).join(' · ');
   row.innerHTML = `
     <div class="case-head"><span class="dot busy"></span> <b>${esc(c.ticket)}</b>
-      <button class="linklike">💬 case log</button></div>
+      <span class="linklike">💬 case log</span></div>
     <div class="sub">${esc(c.phase || '').slice(0, 160)}</div>
     ${links ? `<div class="sub">${links}</div>` : ''}`;
-  row.querySelector('button').onclick = () => openLog({ ticket: c.ticket }, `${c.ticket} · case log`);
+  row.style.cursor = 'pointer';
+  row.onclick = () => openLog({ ticket: c.ticket }, `${c.ticket} · case log`);
+  row.querySelectorAll('a').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
   return row;
 }
 
@@ -48,8 +50,8 @@ function renderDeputies(daemons, orphans) {
       </div>`));
     const actions = el('div');
     if (d.running) {
-      const stop = el('button', null, 'Stop');
-      stop.onclick = async () => { stop.disabled = true; await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project }) }); refresh(); };
+      const stop = el('button', null, 'Stand down');
+      stop.onclick = async () => { if (!confirm(`Stand ${d.project} down?`)) return; stop.disabled = true; await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project }) }); refresh(); };
       actions.append(stop);
     }
     card.querySelector('.row').append(actions);
@@ -154,6 +156,7 @@ async function refreshLog() {
   if (atBottom) body.scrollTop = body.scrollHeight;
 }
 $('#logClose').onclick = () => { logTarget = null; pendingEcho = ''; clearInterval(logTimer); $('#logModal').classList.add('hidden'); };
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#logModal').classList.contains('hidden')) $('#logClose').click(); });
 
 $('#startForm').onsubmit = async (e) => {
   e.preventDefault();
