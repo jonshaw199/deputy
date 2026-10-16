@@ -24,10 +24,11 @@ worktree, writes the code, and opens a draft PR. You can watch any deputy work a
 ## Why
 
 You label a ticket `ai-ready`. A few minutes later there's a draft PR waiting for
-review and the ticket is in review. No prompts to babysit, no copy-pasting
-tickets into a chat window. It runs on your machine, uses your credentials, and
-every change lands in its own throwaway git worktree so it never touches what
-you're working on.
+review and the ticket is in review. No copy-pasting tickets into a chat window, no
+babysitting. It works autonomously and only pings you ("needs your call") when it
+genuinely can't decide something, then resumes on your answer. It runs on your
+machine, uses your credentials, and each change lands in its own throwaway git
+worktree (or the one you already have open, if you're collaborating).
 
 ## Highlights
 
