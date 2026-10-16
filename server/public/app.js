@@ -75,7 +75,7 @@ function renderDeputies(daemons, orphans) {
       card.append(sec);
     }
     const footer = el('div', 'recent actions-row');
-    const pl = el('button', 'linklike', '🐎 patrol log');
+    const pl = el('button', 'linklike', '👁️ patrol log');
     pl.onclick = () => openLog({ daemon: d.project }, `${d.project} · patrol log`);
     footer.append(pl);
     if (d.running) {
