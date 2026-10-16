@@ -26,6 +26,11 @@ before(async () => {
   writeFileSync(join(dir, 'deputy-paused-DEMO-2.meta'), 'atlas');
   writeFileSync(join(dir, 'deputy-session-DEMO-2.txt'), 'sess-xyz');
   writeFileSync(join(dir, 'deputy-item-DEMO-2.log'), '[NEEDS-INPUT] Muted illustration or a text prompt for the empty state?\n');
+  // Open PRs the daemon published: one in review with comments, one whose ticket is a live case.
+  writeFileSync(join(dir, 'deputy-prs-icc_app.json'), JSON.stringify([
+    { number: 482, title: 'feat: empty state [SAAS-290]', url: 'https://x/pull/482', branch: 'jon/saas-290', ticket: 'SAAS-290', comments: [{ author: 'maria', path: 'a.ts', line: 44, body: 'debounce this', url: 'https://x/482#r1' }] },
+    { number: 9, title: 'wip [DEMO-1]', url: 'https://x/pull/9', branch: 'jon/demo-1', ticket: 'DEMO-1', comments: [] },
+  ]));
 
   server = makeServer({ tmp: dir, repos: [ALLOWED_REPO], siteUrl: 'https://acme.atlassian.net', fileEnv: {} });
   await new Promise((r) => server.listen(0, r));
@@ -43,9 +48,9 @@ test('GET /api/status nests the open case under its deputy and echoes config', a
   const d = s.daemons.find((x) => x.project === 'icc_app');
   assert.ok(d.running);
   assert.equal(d.repoDir, ALLOWED_REPO);
-  assert.equal(d.cases.length, 1);
-  assert.equal(d.cases[0].ticket, 'DEMO-1');
-  assert.equal(d.cases[0].item, 'https://acme.atlassian.net/browse/DEMO-1');
+  const demo1 = d.cases.find((c) => c.ticket === 'DEMO-1');
+  assert.equal(demo1.state, 'working');
+  assert.equal(demo1.item, 'https://acme.atlassian.net/browse/DEMO-1');
   assert.equal(s.orphans.length, 0);
 });
 
@@ -68,6 +73,31 @@ test('POST /api/say resumes a parked case: queues a resume request, not a chat l
   assert.equal(entry.kind, 'resume');
   assert.equal(entry.ticket, 'DEMO-2');
   assert.equal(entry.prompt, 'use the muted illustration');
+});
+
+test('GET /api/status folds a ticket PR into its live case and adds PR-only tickets as in-review', async () => {
+  const s = await (await get('/api/status')).json();
+  const icc = s.daemons.find((x) => x.project === 'icc_app');
+  // DEMO-1's PR merges into the live DEMO-1 case (no duplicate row).
+  const demo1 = icc.cases.filter((c) => c.ticket === 'DEMO-1');
+  assert.equal(demo1.length, 1);
+  assert.equal(demo1[0].state, 'working');
+  assert.equal(demo1[0].pr, 'https://x/pull/9');
+  // SAAS-290 has no live agent, so it's an in-review case carrying its comments.
+  const saas = icc.cases.find((c) => c.ticket === 'SAAS-290');
+  assert.equal(saas.state, 'in-review');
+  assert.equal(saas.comments.length, 1);
+  assert.equal(saas.branch, 'jon/saas-290');
+});
+
+test('POST /api/continue queues a follow-up carrying the PR branch', async () => {
+  const r = await post('/api/continue', { project: 'atlas', ticket: 'SAAS-290', branch: 'jon/saas-290', prompt: 'address the debounce comment' });
+  assert.equal(r.status, 200);
+  const lines = readFileSync(join(dir, 'deputy-queue-atlas.jsonl'), 'utf8').trim().split('\n');
+  const entry = JSON.parse(lines[lines.length - 1]);
+  assert.equal(entry.branch, 'jon/saas-290');
+  assert.equal(entry.ticket, 'SAAS-290');
+  assert.equal(entry.prompt, 'address the debounce comment');
 });
 
 test('GET /api/log returns the case transcript, or 400 without a target', async () => {

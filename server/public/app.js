@@ -16,47 +16,40 @@ function badge(outcome) {
   return `<span class="badge ${cls}">${label}</span>`;
 }
 
-// One open case, nested under its deputy. Clicking opens the live chat / case log.
+// One case per ticket. Every row is the same shape; stage shows only via the dot
+// colour (blue = working, amber = needs you, green = in review) and the content.
+// Clicking opens the live chat for a live agent, or the PR's review comments in-review.
 function caseRow(c) {
-  const row = el('div', c.needsInput ? 'case needs-input' : 'case');
+  const review = c.state === 'in-review';
+  const live = !review;
+  const n = (c.comments || []).length;
+  const chip = n ? `<span class="chip">💬 ${n}</span>` : '';
   const links = [
     c.item ? `<a href="${c.item}" target="_blank">ticket</a>` : '',
     c.pr ? `<a href="${c.pr}" target="_blank">PR</a>` : '',
   ].filter(Boolean).join(' · ');
-  const dot = c.needsInput ? 'warn' : 'busy';
-  const detail = c.needsInput
+
+  const dot = c.state === 'needs-input' ? 'warn' : review ? (n ? 'warn' : 'ok') : 'busy';
+  const detail = c.state === 'needs-input'
     ? `<div class="sub question">📻 <b>Needs your call:</b> ${trunc(c.question, 220)}</div>`
-    : `<div class="sub">${trunc(c.phase, 200)}</div>`;
+    : `<div class="sub">${trunc(review ? c.title : c.phase, 180)}</div>`;
+
+  const row = el('div', c.state === 'needs-input' ? 'case needs-input' : 'case');
   row.innerHTML = `
-    <div class="case-head"><span class="dot ${dot}"></span> <b>${esc(c.ticket)}</b>
-      <span class="case-actions"><span class="linklike">💬 case log</span><span class="linklike danger" data-stop>call off</span></span></div>
+    <div class="case-head"><span class="dot ${dot}"></span> <b>${esc(c.ticket)}</b> ${chip}
+      <span class="case-actions"><span class="linklike">💬 open</span>${live ? '<span class="linklike danger" data-stop>stop</span>' : ''}</span></div>
     ${detail}
     ${links ? `<div class="sub">${links}</div>` : ''}`;
   row.style.cursor = 'pointer';
-  row.onclick = () => openLog({ ticket: c.ticket, needsInput: c.needsInput }, `${c.ticket} · case log`);
-  row.querySelectorAll('a').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
-  row.querySelector('[data-stop]').onclick = async (e) => {
+  row.onclick = review
+    ? () => openLog({ pr: { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] }, project: c.project }, `${c.ticket} · review`)
+    : () => openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input' }, `${c.ticket} · case log`);
+  if (live) row.querySelector('[data-stop]').onclick = async (e) => {
     e.stopPropagation();
-    if (!confirm(`Call off ${c.ticket}? (cancels the agent and drops its worktree)`)) return;
+    if (!confirm(`Stop ${c.ticket}? (halts the agent; keeps the worktree)`)) return;
     await api('/api/stop-case', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket }) });
     refresh();
   };
-  return row;
-}
-
-// A finished-but-open PR. Shows its unresolved review comments; clicking opens them
-// with a reply box that tells Deputy what to fix (Deputy never replies on the PR itself).
-function prRow(p, project) {
-  const row = el('div', 'case');
-  const n = p.comments?.length || 0;
-  const chip = n ? `<span class="chip">💬 ${n} comment${n > 1 ? 's' : ''}</span>` : '';
-  const label = p.ticket || `PR #${p.number}`;
-  row.innerHTML = `
-    <div class="case-head"><span class="dot ${n ? 'warn' : 'ok'}"></span> <b>${esc(label)}</b> ${chip}
-      <span class="case-actions"><a href="${p.url}" target="_blank">PR</a></span></div>
-    <div class="sub">${trunc(p.title, 140)}</div>`;
-  row.style.cursor = 'pointer';
-  row.onclick = () => openLog({ pr: p, project }, `${label} · review`);
   row.querySelectorAll('a').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
   return row;
 }
@@ -67,9 +60,18 @@ function renderDeputies(daemons, orphans) {
   if (!daemons.length) wrap.append(el('div', 'muted', '🤠 No deputies on patrol. Deputize a repo above, or start one from the CLI.'));
   for (const d of daemons) {
     const cases = d.cases || [];
+    const working = cases.filter((c) => c.state !== 'in-review').length;
+    const review = cases.filter((c) => c.state === 'in-review').length;
     const card = el('div', 'card');
-    const dot = !d.running ? 'off' : cases.length ? 'busy' : 'ok';
-    const status = !d.running ? 'off duty' : cases.length ? `on ${cases.length} case${cases.length > 1 ? 's' : ''}` : 'on patrol';
+    const dot = !d.running ? 'off' : working ? 'busy' : 'ok';
+    let status;
+    if (!d.running) status = 'off duty';
+    else {
+      const parts = [];
+      if (working) parts.push(`on ${working} case${working > 1 ? 's' : ''}`);
+      if (review) parts.push(`${review} in review`);
+      status = parts.join(' · ') || 'on patrol';
+    }
     card.append(el('div', 'row', `
       <div>
         <h3><span class="dot ${dot}"></span> ${esc(d.project)}</h3>
@@ -77,13 +79,8 @@ function renderDeputies(daemons, orphans) {
         <div class="sub">${esc(d.repoDir || '')}</div>
       </div>`));
     if (cases.length) {
-      const sec = el('div', 'recent'); sec.append(el('div', 'muted', 'Open cases'));
+      const sec = el('div', 'recent');
       for (const c of cases) sec.append(caseRow(c));
-      card.append(sec);
-    }
-    if (d.prs?.length) {
-      const sec = el('div', 'recent'); sec.append(el('div', 'muted', 'Open PRs (in review)'));
-      for (const p of d.prs) sec.append(prRow(p, d.project));
       card.append(sec);
     }
     const footer = el('div', 'recent actions-row');
@@ -111,7 +108,7 @@ async function refresh() {
     const running = s.daemons.filter((d) => d.running).length;
     const allCases = [...s.daemons.flatMap((d) => d.cases || []), ...(s.orphans || [])];
     const open = allCases.length;
-    const needs = allCases.filter((c) => c.needsInput).length;
+    const needs = allCases.filter((c) => c.state === 'needs-input').length;
     $('#globalDot').className = `dot ${needs ? 'warn' : open ? 'busy' : running ? 'ok' : 'off'}`;
     const needsNote = needs ? ` · ⚠️ ${needs} need${needs === 1 ? 's' : ''} your call` : '';
     $('#updated').textContent = `${running} deput${running === 1 ? 'y' : 'ies'} · ${open} open case${open === 1 ? '' : 's'}${needsNote} · ${new Date().toLocaleTimeString()}`;
@@ -145,7 +142,9 @@ async function openLog(target, title) {
   const canReply = !!(target.ticket || target.pr);
   $('#logReply').classList.toggle('hidden', !canReply);
   if (target.ticket) $('#replyInput').placeholder = target.needsInput ? 'Answer the deputy…' : 'Reply to this agent…';
-  if (target.pr) $('#replyInput').placeholder = 'Tell Deputy what to fix…';
+  if (target.pr) $('#replyInput').placeholder = (target.pr.comments || []).length ? 'Extra guidance (optional)…' : 'Tell Deputy what to do…';
+  $('#letDecide').classList.toggle('hidden', !target.needsInput);
+  $('#addressAll').classList.toggle('hidden', !(target.pr && (target.pr.comments || []).length));
   $('#logModal').classList.remove('hidden');
   clearInterval(logTimer);
   if (target.pr) { renderPrComments(target.pr); }
@@ -160,25 +159,36 @@ function renderPrComments(p) {
   const list = cs.map((c) => `@${c.author}  ${c.path}${c.line ? ':' + c.line : ''}\n${c.body}\n${c.url}`).join('\n\n──────────\n\n');
   $('#logBody').textContent = head + list;
 }
+// Build the instruction for a PR follow-up, auto-attaching the unresolved comments so
+// the agent actually sees them (you don't retype). `extra` is your optional guidance.
+function prCommentsPrompt(p, extra) {
+  const cs = p.comments || [];
+  let s = cs.length
+    ? `Address these unresolved review comments on the PR by editing the code and pushing to the branch. Do NOT reply on the PR or resolve the threads; just make the changes.\n\n`
+      + cs.map((c, i) => `${i + 1}. @${c.author} ${c.path}${c.line ? ':' + c.line : ''} — ${c.body}`).join('\n')
+    : 'Do more work on this PR.';
+  if (extra && extra.trim()) s += `\n\nAdditional guidance from the user: ${extra.trim()}`;
+  return s;
+}
 $('#logReply').onsubmit = async (e) => {
   e.preventDefault();
   const inp = $('#replyInput');
-  const btn = e.target.querySelector('button');
+  const btn = e.target.querySelector('button[type=submit]');
   const message = inp.value.trim();
-  if (!message) return;
 
   // A PR entry: dispatch a follow-up on that branch (Deputy works, you stay the only PR voice).
   if (logTarget?.pr) {
     const p = logTarget.pr;
     inp.value = '';
     btn.disabled = true; const label = btn.textContent; btn.textContent = 'Sending…';
-    const r = await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: logTarget.project, ticket: p.ticket || `PR-${p.number}`, branch: p.branch, prompt: message }) });
+    const r = await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: logTarget.project, ticket: p.ticket || `PR-${p.number}`, branch: p.branch, prompt: prCommentsPrompt(p, message) }) });
     btn.disabled = false; btn.textContent = label;
     if (r.error) { inp.value = message; alert(r.error); }
-    else { $('#logBody').textContent += `\n\n[SENT] Deputy is on it; it'll appear under Open cases.`; $('#logBody').scrollTop = $('#logBody').scrollHeight; }
+    else { $('#logBody').textContent += `\n\n[SENT] Deputy is on it; it'll appear as a working case.`; $('#logBody').scrollTop = $('#logBody').scrollHeight; }
     return;
   }
 
+  if (!message) return;
   if (!logTarget?.ticket) return;
   inp.value = '';
   // Optimistic echo: show it instantly, keep showing it until the agent's log catches up.
@@ -191,6 +201,16 @@ $('#logReply').onsubmit = async (e) => {
   btn.disabled = false; btn.textContent = label;
   if (r.error) { pendingEcho = ''; inp.value = message; alert(r.error); }
   else { if (r.resumed) pendingResume = true; inp.focus(); refreshLog(); }
+};
+// Fix every unresolved comment with no typing: dispatch with just the comment list.
+$('#addressAll').onclick = () => { $('#replyInput').value = ''; $('#logReply').requestSubmit(); };
+// "I don't feel like answering" — resume the parked agent and let it decide for itself.
+$('#letDecide').onclick = async () => {
+  if (!logTarget?.needsInput) return;
+  const btn = $('#letDecide'); btn.disabled = true; const t = btn.textContent; btn.textContent = 'Resuming…';
+  const r = await api('/api/say', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: logTarget.ticket, message: 'Use your best judgment and proceed. Do not wait for my input: make a reasonable, reversible decision and continue the work.' }) });
+  btn.disabled = false; btn.textContent = t;
+  if (r.error) alert(r.error); else { pendingResume = true; $('#logBody').textContent += '\n[YOU] (let it decide)\n'; refreshLog(); }
 };
 async function refreshLog() {
   if (!logTarget || logTarget.pr) return;
@@ -213,7 +233,11 @@ $('#startForm').onsubmit = async (e) => {
   e.preventDefault();
   const repo = $('#repoSelect').value;
   if (!repo) return;
-  await api('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo }) });
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true; const label = btn.textContent; btn.textContent = 'Deputizing…';
+  const r = await api('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo }) });
+  btn.disabled = false; btn.textContent = label;
+  if (r.error || r.ok === false) alert(`Deputize failed: ${r.error || (r.output || '').slice(-300)}`);
   refresh();
 };
 

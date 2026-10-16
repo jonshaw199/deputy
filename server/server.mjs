@@ -76,9 +76,10 @@ export function makeServer(opts = {}) {
       .map((f) => f.match(/^deputy-item-(.+)\.lock$/))
       .filter((m) => m && !m[1].startsWith('daemon-'))
       .map((m) => {
-        const ticket = m[1];
-        const log = tail(join(TMP, `deputy-item-${ticket}.log`));
-        const project = tail(join(TMP, `deputy-item-${ticket}.meta`)).trim() || null;
+        const raw = m[1];
+        const ticket = raw.replace(/-cont-.*$/, ''); // a continuation job folds into its base ticket
+        const log = tail(join(TMP, `deputy-item-${raw}.log`));
+        const project = tail(join(TMP, `deputy-item-${raw}.meta`)).trim() || null;
         return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(log), item: itemUrlIn(log), needsInput: false };
       });
   }
@@ -107,6 +108,21 @@ export function makeServer(opts = {}) {
     return [...listActive().filter((a) => !pausedIds.has(a.ticket)), ...paused];
   };
 
+  // Fold live agents and open PRs into one case per ticket. A ticket with a live
+  // agent is working / needs-input (and keeps its PR + comments if it has one); a
+  // ticket with only an open PR is in-review. Live cases first, then in-review.
+  function mergeCases(live, prs, project) {
+    const byTicket = new Map();
+    for (const a of live) byTicket.set(a.ticket, { ...a, state: a.needsInput ? 'needs-input' : 'working' });
+    for (const p of prs) {
+      const key = p.ticket || `PR-${p.number}`;
+      const ex = byTicket.get(p.ticket);
+      if (ex) { ex.pr = p.url; ex.branch = p.branch; ex.comments = p.comments; ex.prNumber = p.number; if (!ex.item) ex.item = p.item; }
+      else byTicket.set(key, { ticket: key, project, state: 'in-review', title: p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item });
+    }
+    return [...byTicket.values()];
+  }
+
   const json = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
   const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 
@@ -121,14 +137,12 @@ export function makeServer(opts = {}) {
 
     if (path === '/api/status') {
       const daemons = listDaemons();
-      const cases = liveOrPaused();
-      const activeTickets = new Set(cases.map((a) => a.ticket));
-      for (const d of daemons) {
-        d.cases = cases.filter((a) => a.project === d.project);
-        // Done-but-open PRs = watched PRs whose ticket isn't a live/parked case right now.
-        d.prs = readPrs(d.project).filter((p) => !p.ticket || !activeTickets.has(p.ticket));
-      }
-      const orphans = cases.filter((a) => !daemons.some((d) => d.project === a.project));
+      const live = liveOrPaused();
+      // One case per ticket: a live agent (working / needs-input) and its open PR
+      // (in-review, with review comments) are the same ticket, merged here.
+      for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), d.project);
+      const orphans = live.filter((a) => !daemons.some((d) => d.project === a.project))
+        .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working' }));
       return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
     }
     if (path === '/api/log') {
@@ -173,16 +187,17 @@ export function makeServer(opts = {}) {
       // One box: stream to a live agent, or resume a parked one (queue + SIGUSR1 nudge).
       const { ticket, message } = await readBody(req);
       if (!ticket || !message) return json(res, 400, { error: 'ticket and message required' });
-      if (listActive().some((a) => a.ticket === ticket)) {
-        appendFileSync(join(TMP, `deputy-input-${ticket}.jsonl`), message + '\n');
-        return json(res, 200, { ok: true });
-      }
+      // Parked state is authoritative: a parked case resumes even if a stale lock lingers.
       const paused = listPaused().find((a) => a.ticket === ticket);
       if (paused?.project) {
         const line = JSON.stringify({ ticket, prompt: message, kind: 'resume', id: `web-${ticket}-${Date.now()}` });
         appendFileSync(join(TMP, `deputy-queue-${paused.project}.jsonl`), line + '\n');
         try { process.kill(Number(tail(join(TMP, `deputy-${paused.project}.pid`)).trim()), 'SIGUSR1'); } catch {}
         return json(res, 200, { ok: true, resumed: true });
+      }
+      if (listActive().some((a) => a.ticket === ticket)) {
+        appendFileSync(join(TMP, `deputy-input-${ticket}.jsonl`), message + '\n');
+        return json(res, 200, { ok: true });
       }
       return json(res, 400, { error: 'no live or parked agent for that ticket' });
     }

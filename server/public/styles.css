@@ -45,7 +45,7 @@ section { margin-bottom: 32px; }
 .case-head b { font-size: 14px; }
 .case-head .case-actions { margin-left: auto; display: flex; gap: 12px; }
 .danger, .linklike.danger { color: var(--fail); }
-.actions-row { display: flex; gap: 16px; align-items: center; margin-top: 8px; padding-top: 8px; }
+.actions-row { display: flex; gap: 16px; align-items: baseline; margin-top: 8px; padding-top: 8px; }
 .chip { font-size: 11px; color: var(--warn); border: 1px solid var(--warn); border-radius: 999px; padding: 0 8px; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
 .badge.ok { color: var(--ok); } .badge.fail { color: var(--fail); } .badge.warn { color: var(--warn); }
@@ -71,3 +71,6 @@ button:hover { border-color: var(--accent); }
 .reply { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .reply.hidden { display: none; }
 .reply input { flex: 1; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 8px 12px; font-size: 13px; }
+.ghost { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 7px; padding: 8px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.ghost:hover { border-color: var(--accent); color: var(--text); }
+#letDecide.hidden { display: none; }
