@@ -59,8 +59,9 @@ worktree (or the one you already have open, if you're collaborating).
   detached HEAD with its own deps, so your tree is untouched (unless you're
   collaborating on a branch you already have open, see above).
 - **Concurrent** — processes multiple items at once, each fully sandboxed.
-- **Live dashboard** — deputies on patrol, their open cases nested beneath with
-  streaming logs + live chat, recent cases, and one-click deputize / stand down.
+- **Live dashboard** — deputies on patrol, each ticket shown as one case at its stage
+  (working / needs your call / in review) with a streaming log, live chat, the 🔫
+  full-auto toggle, and one-click deputize / stand down.
 - **Zero company lock-in** — all config lives in `.env`; the repo carries no
   secrets and nothing employer-specific. Fork it, point it anywhere.
 
@@ -99,7 +100,7 @@ bin/daemon stop-ticket <TICKET>                              # cancel one in-fli
 3. **Watch it work** — open the dashboard (`npm run dashboard` → http://localhost:4319). The case shows under its deputy with a streaming log.
 4. **Steer it live** — open the case and type in the reply box; it answers in the same session.
 5. **It finishes on its own** — opens a draft PR and advances the ticket. If the PR's CI goes red, it fixes it automatically.
-6. **Cancel anything** — "call off" a single case, "stand down" a whole deputy.
+6. **Clear it** — ✕ on a case stops a live agent (keeps its worktree) or hides a finished one; "stand down" stops the whole deputy.
 
 ## Talking to deputies
 
@@ -116,7 +117,8 @@ Review comments surface on the case, you tell Deputy what to fix, it never repli
   exiting, long waits, even a reboot. Or from the CLI: `deputy resume <TICKET> "…"`.
 - **Live chat:** on the dashboard, open a case and type in the reply box — the
   message streams straight into that running agent's session (full context kept),
-  and you watch it think and respond live. **Call off** cancels a case.
+  and you watch it think and respond live. The ✕ on a case stops a live agent (keeps
+  the worktree) or hides a finished one.
 - **Follow-up on an existing PR:** `deputy continue <TICKET> "…"` (or the UI)
   re-checks-out that PR's branch, runs the agent with your note, and pushes to the
   same PR.
