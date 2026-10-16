@@ -39,7 +39,9 @@ section { margin-bottom: 32px; }
 .case:last-child { border-bottom: none; }
 .case-head { display: flex; align-items: center; gap: 8px; }
 .case-head b { font-size: 14px; }
-.case-head .linklike { margin-left: auto; }
+.case-head .case-actions { margin-left: auto; display: flex; gap: 12px; }
+.danger, .linklike.danger { color: var(--fail); }
+.actions-row { display: flex; gap: 16px; align-items: center; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
 .badge.ok { color: var(--ok); } .badge.fail { color: var(--fail); } .badge.warn { color: var(--warn); }
 

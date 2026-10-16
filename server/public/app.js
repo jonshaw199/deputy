@@ -24,12 +24,18 @@ function caseRow(c) {
   ].filter(Boolean).join(' · ');
   row.innerHTML = `
     <div class="case-head"><span class="dot busy"></span> <b>${esc(c.ticket)}</b>
-      <span class="linklike">💬 case log</span></div>
+      <span class="case-actions"><span class="linklike">💬 case log</span><span class="linklike danger" data-stop>call off</span></span></div>
     <div class="sub">${esc(c.phase || '').slice(0, 160)}</div>
     ${links ? `<div class="sub">${links}</div>` : ''}`;
   row.style.cursor = 'pointer';
   row.onclick = () => openLog({ ticket: c.ticket }, `${c.ticket} · case log`);
   row.querySelectorAll('a').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
+  row.querySelector('[data-stop]').onclick = async (e) => {
+    e.stopPropagation();
+    if (!confirm(`Call off ${c.ticket}? (cancels the agent and drops its worktree)`)) return;
+    await api('/api/stop-case', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket }) });
+    refresh();
+  };
   return row;
 }
 
@@ -48,14 +54,6 @@ function renderDeputies(daemons, orphans) {
         <div class="sub">${status}${d.running ? ` · pid ${d.pid} · checks every ${d.interval}s` : ''}</div>
         <div class="sub">${esc(d.repoDir || '')}</div>
       </div>`));
-    const actions = el('div');
-    if (d.running) {
-      const stop = el('button', null, 'Stand down');
-      stop.onclick = async () => { if (!confirm(`Stand ${d.project} down?`)) return; stop.disabled = true; await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project }) }); refresh(); };
-      actions.append(stop);
-    }
-    card.querySelector('.row').append(actions);
-
     if (cases.length) {
       const sec = el('div', 'recent'); sec.append(el('div', 'muted', 'Open cases'));
       for (const c of cases) sec.append(caseRow(c));
@@ -71,10 +69,16 @@ function renderDeputies(daemons, orphans) {
       }
       card.append(sec);
     }
-    const footer = el('div', 'recent');
+    const footer = el('div', 'recent actions-row');
     const pl = el('button', 'linklike', '🐎 patrol log');
     pl.onclick = () => openLog({ daemon: d.project }, `${d.project} · patrol log`);
-    footer.append(pl); card.append(footer);
+    footer.append(pl);
+    if (d.running) {
+      const stop = el('button', 'linklike danger', 'stand down');
+      stop.onclick = async () => { if (!confirm(`Stand ${d.project} down?`)) return; await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project }) }); refresh(); };
+      footer.append(stop);
+    }
+    card.append(footer);
     wrap.append(card);
   }
   if (orphans?.length) {

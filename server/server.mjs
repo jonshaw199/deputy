@@ -82,8 +82,8 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 function readBody(req) {
   return new Promise((resolve) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { resolve({}); } }); });
 }
-function runDaemon(cwd, action) {
-  return new Promise((resolve) => execFile(DAEMON_BIN, [action], { cwd }, (err, stdout, stderr) => resolve({ ok: !err, output: (stdout || '') + (stderr || '') })));
+function runDaemon(cwd, ...args) {
+  return new Promise((resolve) => execFile(DAEMON_BIN, args, { cwd }, (err, stdout, stderr) => resolve({ ok: !err, output: (stdout || '') + (stderr || '') })));
 }
 
 const server = createServer(async (req, res) => {
@@ -124,6 +124,16 @@ const server = createServer(async (req, res) => {
     // Nudge the daemon to drain the queue now instead of waiting for the poll.
     try { process.kill(Number(tail(join(TMP, `deputy-${project}.pid`)).trim()), 'SIGUSR1'); } catch {}
     return json(res, 200, { ok: true });
+  }
+  if (path === '/api/stop-case' && req.method === 'POST') {
+    // Call off one in-flight case (runs `daemon stop-ticket <ticket>` in its repo).
+    const { ticket } = await readBody(req);
+    if (!ticket) return json(res, 400, { error: 'ticket required' });
+    const c = listActive().find((a) => a.ticket === ticket);
+    const daemons = listDaemons();
+    const cwd = (daemons.find((d) => d.project === c?.project) || daemons.find((d) => d.repoDir))?.repoDir;
+    if (!cwd) return json(res, 400, { error: 'no repo for that case' });
+    return json(res, 200, await runDaemon(cwd, 'stop-ticket', ticket));
   }
   if (path === '/api/say' && req.method === 'POST') {
     // Live chat: append a message to a running agent's input channel (it tails it).

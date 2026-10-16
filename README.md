@@ -74,17 +74,16 @@ bin/daemon continue <TICKET> "also handle the empty state"   # follow-up on its 
 bin/daemon stop-ticket <TICKET>                              # cancel one in-flight job
 ```
 
-## Follow-ups & CI fixes (no comments)
+## Talking to deputies (no PR/Jira comments)
 
-Once a ticket has a PR, you can nudge it without touching GitHub/Jira:
-
-- **Dashboard:** type a ticket + instruction in the "tell deputy…" box, hit Send.
-- **CLI:** `deputy continue <TICKET> "…"`.
-
-Either way the instruction is queued; deputy re-checks-out that PR's branch, runs
-the agent with your note, and pushes to the same PR. **Red CI is handled on its
-own** — no need to ask. (These run follow-ups on an existing PR; they don't steer
-an agent that's mid-implementation.)
+- **Live chat:** on the dashboard, open a case and type in the reply box — the
+  message streams straight into that running agent's session (full context kept),
+  and you watch it think and respond live. **Call off** cancels a case.
+- **Follow-up on an existing PR:** `deputy continue <TICKET> "…"` (or the UI)
+  re-checks-out that PR's branch, runs the agent with your note, and pushes to the
+  same PR.
+- **CI is handled automatically** — when a deputy's PR goes red, it reads the failing
+  checks + annotations and pushes a fix without being asked.
 
 ## Trackers
 
@@ -119,10 +118,14 @@ the agent, and the dashboard are all tracker-agnostic.
 - The agent runs with an **in-process MCP server** (`mcp__tracker__*`) so it can
   read the item and mark it done through whatever tracker is configured — it
   never learns the backend.
-- The dashboard and the control API are decoupled: the API reads daemon state
-  from `/tmp` and shells out to `bin/daemon`, so any front-end (web, a macOS menu
-  bar widget, a CLI) can reuse the same endpoints:
-  `/api/status`, `/api/start`, `/api/stop`, `/api/log`, `/api/continue`.
+- **Live sessions:** each case's agent runs with a per-case input channel
+  (`DEPUTY_INPUT`, set by the daemon). The dashboard reply box / `/api/say` stream
+  messages into the open session; a `SIGUSR1` nudge makes follow-ups fire instantly
+  instead of waiting for the poll.
+- The dashboard and control API are decoupled: the API reads daemon state from
+  `/tmp` and shells out to `bin/daemon`, so any front-end (web, a macOS menu bar
+  widget, a CLI) can reuse the same endpoints: `/api/status`, `/api/start`,
+  `/api/stop`, `/api/stop-case`, `/api/log`, `/api/continue`, `/api/say`.
 
 ## Layout
 
@@ -138,7 +141,15 @@ server/public/               the dashboard (vanilla JS, no build step)
 
 ## Configuration
 
+Needs `node` ≥18, `git`, `gh` (authenticated), and `jq`. The daemon installs its
+own agent deps into `<repo>_deputy/` on first start.
+
 Everything is driven by `DEPUTY_*` variables in `.env` — see
-[`.env.example`](.env.example) for the full list. Required: tracker credentials
-and a GitHub token. One daemon runs per repo; list repo paths in `DEPUTY_REPOS`
-to start them from the dashboard.
+[`.env.example`](.env.example) for the full list. Required: tracker credentials +
+a GitHub token. Notable knobs:
+
+- `DEPUTY_TRACKER` — `jira` | `github`
+- `DEPUTY_REPOS` — repo paths the dashboard can deputize (one daemon per repo)
+- `DEPUTY_WORKTREE_SETUP` — command run in each fresh worktree, e.g. `bundle install && yarn install` (so tests/hooks pass)
+- `DEPUTY_AGENT_CMD` — the agent command; defaults to the bundled Claude runner, swap for any other
+- `DEPUTY_PR_LABEL` — label put on deputy PRs (also how CI auto-fix finds them)
