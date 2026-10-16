@@ -20,6 +20,7 @@ DAEMON_BIN="$SCRIPT_DIR/daemon"
 RUNNER_PATH="$PROJECT_ROOT/lib/claude-agent-runner.mjs"
 TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
 PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
+AUTO_DISPATCH="$PROJECT_ROOT/lib/auto-dispatch.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -149,12 +150,16 @@ function watch_and_process() {
       echo "[$(date)] No tickets found"
     fi
 
-    # Fix red CI on deputy's own PRs, and run any local "do X next" requests.
+    # Fix red CI on deputy's own PRs.
     check_for_ci_failures
-    drain_continue_queue
 
     # Publish open PRs + unresolved review comments for the dashboard (deputy never replies).
     (cd "$MAIN_PROJECT_DIR" && node "$PR_WATCH" > "$PRS_FILE" 2>/dev/null) || true
+    # Full-auto cases: auto-queue "address all" for any new review comments.
+    node "$AUTO_DISPATCH" "$PROJECT_NAME" >> "$DAEMON_LOG_FILE" 2>/dev/null || true
+
+    # Run any queued "do X next" / resume / auto requests.
+    drain_continue_queue
 
     # Interruptible sleep: a SIGUSR1 nudge (continue/dashboard) breaks out of this
     # immediately via the trap, instead of waiting out the whole interval.
@@ -214,6 +219,7 @@ function continue_ticket() {
   else branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]'); fi
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}_cont_${cont_id}"
   echo "$PROJECT_NAME" > "$meta_file"
+  [ -f "/tmp/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file' '$meta_file'" EXIT
 
@@ -410,6 +416,7 @@ function process_ticket() {
   : > "$input_file"
   echo "$PROJECT_NAME" > "$meta_file"
   rm -f "$ask_file" "$session_file" "/tmp/deputy-paused-${ticket_id}.meta"
+  [ -f "/tmp/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1  # full-auto: never park to ask
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
 
@@ -576,6 +583,7 @@ function resume_ticket() {
   : > "$input_file"
   echo "$PROJECT_NAME" > "$meta_file"
   rm -f "$ask_file" "$paused_meta"
+  [ -f "/tmp/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1
   trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
 
   echo "[$(date)] Resuming $ticket_id with your answer" >> "$log_file"

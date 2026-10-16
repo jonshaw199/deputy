@@ -4,7 +4,7 @@
 // hit the exact same endpoints. It reads daemon state from /tmp (read-only) and
 // shells out to bin/daemon for start/stop.
 import { createServer } from 'node:http';
-import { readFileSync, readdirSync, existsSync, appendFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, appendFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
@@ -102,6 +102,8 @@ export function makeServer(opts = {}) {
   const readPrs = (project) => {
     try { return JSON.parse(readFileSync(join(TMP, `deputy-prs-${project}.json`), 'utf8')); } catch { return []; }
   };
+  // Full-auto marker: this ticket never parks to ask, and auto-handles review comments.
+  const isAuto = (ticket) => existsSync(join(TMP, `deputy-auto-${ticket}`));
   const liveOrPaused = () => {
     const paused = listPaused();
     const pausedIds = new Set(paused.map((p) => p.ticket));
@@ -120,7 +122,7 @@ export function makeServer(opts = {}) {
       if (ex) { ex.pr = p.url; ex.branch = p.branch; ex.comments = p.comments; ex.prNumber = p.number; if (!ex.item) ex.item = p.item; }
       else byTicket.set(key, { ticket: key, project, state: 'in-review', title: p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item });
     }
-    return [...byTicket.values()];
+    return [...byTicket.values()].map((c) => ({ ...c, auto: isAuto(c.ticket) }));
   }
 
   const json = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -142,7 +144,7 @@ export function makeServer(opts = {}) {
       // (in-review, with review comments) are the same ticket, merged here.
       for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), d.project);
       const orphans = live.filter((a) => !daemons.some((d) => d.project === a.project))
-        .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working' }));
+        .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working', auto: isAuto(a.ticket) }));
       return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
     }
     if (path === '/api/log') {
@@ -182,6 +184,15 @@ export function makeServer(opts = {}) {
       const cwd = (daemons.find((d) => d.project === c?.project) || daemons.find((d) => d.repoDir))?.repoDir;
       if (!cwd) return json(res, 400, { error: 'no repo for that case' });
       return json(res, 200, await runDaemon(cwd, 'stop-ticket', ticket));
+    }
+    if (path === '/api/auto' && req.method === 'POST') {
+      // Toggle full-auto for a ticket: never ask, auto-handle review comments.
+      const { ticket, on } = await readBody(req);
+      if (!ticket) return json(res, 400, { error: 'ticket required' });
+      const marker = join(TMP, `deputy-auto-${ticket}`);
+      if (on) writeFileSync(marker, '1');
+      else { try { unlinkSync(marker); } catch {} try { unlinkSync(join(TMP, `deputy-auto-handled-${ticket}`)); } catch {} }
+      return json(res, 200, { ok: true, auto: !!on });
     }
     if (path === '/api/say' && req.method === 'POST') {
       // One box: stream to a live agent, or resume a parked one (queue + SIGUSR1 nudge).
