@@ -2,6 +2,9 @@ const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const trunc = (s, n) => { s = String(s || ''); return s.length <= n ? esc(s) : esc(s.slice(0, n).replace(/\s+\S*$/, '')) + '…'; };
+let siteUrl = ''; // tracker base, e.g. https://acme.atlassian.net — set from /api/status
+// Turn ticket keys (WEB-123) in a string into links to the tracker.
+const linkTickets = (s) => esc(String(s || '')).replace(/\b([A-Z][A-Z0-9]+-\d+)\b/g, (k) => siteUrl ? `<a href="${siteUrl}/browse/${k}" target="_blank">${k}</a>` : k);
 // Sharp pistol silhouette (emoji 🔫 renders as a toy water gun on macOS).
 const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="3" y="7" width="18" height="3.2" rx=".6"/><path d="M7 10l-1.6 6a1 1 0 0 0 1 1.3h2.4a1 1 0 0 0 1-.7L11.6 10z"/><rect x="18.4" y="5.7" width="2.6" height="2" rx=".4"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
@@ -40,7 +43,7 @@ function caseRow(c) {
   const detail = c.state === 'needs-input'
     ? `<div class="sub question">📻 <b>Needs your call:</b> ${trunc(c.question, 220)}</div>`
     : blocked
-    ? `<div class="sub blocked-note">⛓️ <b>Blocked:</b> ${trunc(c.phase, 200)} <span class="muted">· will start once its dependency has a branch</span></div>`
+    ? `<div class="sub blocked-note">⛓️ <b>Blocked:</b> ${linkTickets(c.phase)} <span class="muted">· will start once its dependency has a branch</span></div>`
     : `<div class="sub">${trunc(review ? c.title : c.phase, 180)}</div>`;
 
   const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: don't ask me questions, just decide and keep going">${GUN}</span>`;
@@ -110,7 +113,7 @@ function renderDeputies(daemons, orphans) {
       card.append(sec);
     }
     const footer = el('div', 'recent actions-row');
-    const pl = el('button', 'linklike', '👁️ patrol log');
+    const pl = el('button', 'linklike', 'patrol log');
     pl.onclick = () => openLog({ daemon: d.project }, `${d.project} · patrol log`);
     footer.append(pl);
     if (d.running) {
@@ -131,6 +134,7 @@ function renderDeputies(daemons, orphans) {
 async function refresh() {
   try {
     const s = await api('/api/status');
+    siteUrl = s.siteUrl || '';
     const running = s.daemons.filter((d) => d.running).length;
     const allCases = [...s.daemons.flatMap((d) => d.cases || []), ...(s.orphans || [])];
     const open = allCases.length;

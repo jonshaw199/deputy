@@ -25,10 +25,12 @@ beforeEach(() => {
 });
 afterEach(() => { global.fetch = origFetch; });
 
-test('listReady filters out PRs and maps issues to {id,title}, with auth + label', async () => {
+test('listReady filters out PRs and maps issues, scoped to the current assignee', async () => {
   stub((url) => {
+    if (/api\.github\.com\/user$/.test(url)) return { body: { login: 'me' } };
     assert.match(url, /\/repos\/acme\/app\/issues\?/);
     assert.match(url, /labels=ai-ready/);
+    assert.match(url, /assignee=me/); // only tickets assigned to you
     return { body: [{ number: 5, title: 'Bug' }, { number: 6, title: 'A PR', pull_request: {} }] };
   });
   assert.deepEqual(await github.listReady(), [{ id: '5', title: 'Bug' }]);

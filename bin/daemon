@@ -312,8 +312,11 @@ function check_for_ci_failures() {
     local key="ci:${pr_number}:${commit_sha}"
     grep -qF "$key" "$PROCESSED_FILE" 2>/dev/null && continue
 
+    # NOTE: `gh pr checks` exits non-zero when checks are failing/pending — do NOT bail on
+    # that, or we'd skip exactly the red PRs we need to fix. Judge by the JSON instead.
     local checks
-    checks=$(cd "$MAIN_PROJECT_DIR" && gh pr checks "$pr_number" --json name,state,link 2>/dev/null) || continue
+    checks=$(cd "$MAIN_PROJECT_DIR" && gh pr checks "$pr_number" --json name,state,link 2>/dev/null)
+    [ -z "$checks" ] && continue
     local pending; pending=$(echo "$checks" | jq '[.[]|select(.state=="PENDING" or .state=="IN_PROGRESS")]|length' 2>/dev/null || echo 0)
     [ "$pending" -gt 0 ] && continue
     local failed; failed=$(echo "$checks" | jq '[.[]|select(.state=="FAIL" or .state=="FAILURE")]|length' 2>/dev/null || echo 0)
@@ -543,9 +546,15 @@ function resolve_base_ref() {
   command -v gh >/dev/null 2>&1 || { echo "MAIN"; return; }  # can't inspect PRs; don't block work
 
   local open_count=0 parent_ticket="" parent_branch=""
-  local b prs merged branch
+  local b prs merged branch expected
   for b in $blockers; do
-    prs=$(cd "$MAIN_PROJECT_DIR" && gh pr list --search "$b" --state all --json headRefName,state 2>/dev/null)
+    # Check the deterministic deputy branch first (exact, no search-index lag); fall back to
+    # a text search so a collaborator's renamed branch is still found.
+    expected=$(echo "$USER/$b" | tr '[:upper:]' '[:lower:]')
+    prs=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$expected" --state all --json headRefName,state 2>/dev/null)
+    if [ -z "$prs" ] || [ "$prs" = "[]" ]; then
+      prs=$(cd "$MAIN_PROJECT_DIR" && gh pr list --search "$b" --state all --json headRefName,state 2>/dev/null)
+    fi
     [ -z "$prs" ] && prs='[]'
     merged=$(echo "$prs" | jq -r 'any(.[]; .state=="MERGED")' 2>/dev/null)
     [ "$merged" = "true" ] && continue                       # blocker already landed on main

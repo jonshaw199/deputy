@@ -43,6 +43,9 @@ section { margin-bottom: 32px; }
 /* Parked case: amber highlight on the question line only, so the header stays aligned. */
 .case .question { color: var(--text); margin-top: 5px; padding: 6px 10px; border-left: 3px solid var(--warn); background: rgba(210,153,34,.08); border-radius: 6px; word-break: normal; overflow-wrap: break-word; }
 .case .question b { color: var(--warn); }
+/* Case preview text is prose: break on words, not mid-word (the repo path above
+   keeps .card .sub's break-all). */
+.case .sub { word-break: normal; overflow-wrap: break-word; }
 /* Blocked case: muted, non-pulsing — it's waiting, not working. */
 .case .blocked-note { color: var(--muted); margin-top: 5px; }
 .case .blocked-note b { color: #aab2c0; }

@@ -23,6 +23,17 @@ test('lastMeaningful returns empty string when everything is noise', () => {
   assert.equal(lastMeaningful('====\n[RESULT] success\n↳ x\n'), '');
 });
 
+test('lastMeaningful prefers the last narration over a trailing raw code line', () => {
+  const log = '[ASSISTANT] Adding the preference spec:\n  it "defaults to false" do\n    expect(pref).to be_falsey\n  end\n';
+  assert.equal(lastMeaningful(log), 'Adding the preference spec:');
+});
+
+test('lastMeaningful humanizes the current tool when there is no narration yet', () => {
+  assert.equal(lastMeaningful('[RUNNER] started\n━━━ [mcp__tracker__get_item] ━━━\n{"itemId":"WEB-1"}\n'), 'reading the ticket');
+  assert.equal(lastMeaningful('━━━ [Edit] ━━━\n↳ ok\n'), 'editing files');
+  assert.equal(lastMeaningful('━━━ [Bash] ━━━\n↳ run\n'), 'running a command');
+});
+
 test('prUrlIn finds the last PR url and is null when absent', () => {
   assert.equal(prUrlIn('see https://github.com/acme/app/pull/1 and https://github.com/acme/app/pull/42'), 'https://github.com/acme/app/pull/42');
   assert.equal(prUrlIn('no links here'), null);

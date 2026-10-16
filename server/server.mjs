@@ -24,15 +24,28 @@ export function parseEnvFile(path) {
   return out;
 }
 
-// Last human-meaningful line for the card preview: the agent's last words or the
-// action it's taking, skipping separators / [RESULT] / tool-result noise.
+// A readable one-liner for the card preview. Prefer the agent's last actual
+// narration ([ASSISTANT]) or your last message ([YOU]); if the tail is mid-tool
+// (raw code, diffs, command output), humanize the current tool instead of dumping it.
+const humanizeTool = (t) => {
+  if (/get_item/.test(t)) return 'reading the ticket';
+  if (/ask_user/.test(t)) return 'asking you a question';
+  if (/finish|markDone/i.test(t)) return 'wrapping up';
+  if (/^(Edit|Write|MultiEdit|NotebookEdit)/.test(t)) return 'editing files';
+  if (/^(Read|Grep|Glob|LS)/.test(t)) return 'exploring the code';
+  if (/^Bash/.test(t)) return 'running a command';
+  return 'working…';
+};
 export const lastMeaningful = (text) => {
-  const noise = (l) => !l || /^=+$/.test(l) || /^━+/.test(l) || /^\[(RESULT|STATUS|RUNNER|BLOCKED)\]/.test(l) || l.startsWith('↳');
   const lines = text.split('\n').map((l) => l.trim());
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
-    if (noise(l)) continue;
-    return l.replace(/^\[ASSISTANT\]\s*/, '').replace(/^\[YOU\]\s*/, 'you: ');
+    if (/^\[ASSISTANT\]/.test(l)) return l.replace(/^\[ASSISTANT\]\s*/, '');
+    if (/^\[YOU\]/.test(l)) return l.replace(/^\[YOU\]\s*/, 'you: ');
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i].match(/^━+\s*\[([^\]]+)\]/);
+    if (m) return humanizeTool(m[1]);
   }
   return '';
 };
@@ -78,9 +91,11 @@ export function makeServer(opts = {}) {
       .map((m) => {
         const raw = m[1];
         const ticket = raw.replace(/-cont-.*$/, ''); // a continuation job folds into its base ticket
-        const log = tail(join(TMP, `deputy-item-${raw}.log`));
+        const logPath = join(TMP, `deputy-item-${raw}.log`);
+        const log = tail(logPath);
+        const full = tail(logPath, Infinity); // ITEM_URL/PR are written once near the top
         const project = tail(join(TMP, `deputy-item-${raw}.meta`)).trim() || null;
-        return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(log), item: itemUrlIn(log), needsInput: false };
+        return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(full), item: itemUrlIn(full), needsInput: false };
       });
   }
 
@@ -92,10 +107,10 @@ export function makeServer(opts = {}) {
       .map((m) => {
         const ticket = m[1];
         const question = tail(join(TMP, `deputy-ask-${ticket}.txt`)).trim();
-        const log = tail(join(TMP, `deputy-item-${ticket}.log`));
+        const full = tail(join(TMP, `deputy-item-${ticket}.log`), Infinity);
         const project = tail(join(TMP, `deputy-paused-${ticket}.meta`)).trim()
           || tail(join(TMP, `deputy-item-${ticket}.meta`)).trim() || null;
-        return { ticket, project, phase: question, question, pr: prUrlIn(log), item: itemUrlIn(log), needsInput: true };
+        return { ticket, project, phase: question, question, pr: prUrlIn(full), item: itemUrlIn(full), needsInput: true };
       });
   }
   // Cases waiting on a dependency (a sibling ticket's PR): no live process, no PR yet.
