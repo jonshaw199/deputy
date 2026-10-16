@@ -208,12 +208,14 @@ function continue_ticket() {
   local ticket_id=$1 continuation_prompt=$2 cont_id=$3 branch_override=$4
   local log_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.log"
   local lock_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.lock"
+  local meta_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.meta"  # so the case nests under its deputy
   local branch_name
   if [ -n "$branch_override" ]; then branch_name="$branch_override"
   else branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]'); fi
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}_cont_${cont_id}"
+  echo "$PROJECT_NAME" > "$meta_file"
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
-  trap "rm -f '$lock_file'" EXIT
+  trap "rm -f '$lock_file' '$meta_file'" EXIT
 
   echo "[$(date)] Continuation for $ticket_id (cont $cont_id)" > "$log_file"
   echo "[$(date)] Request: $continuation_prompt" >> "$log_file"
@@ -275,7 +277,7 @@ Work autonomously. Report what you did."
     cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
     git worktree prune 2>/dev/null || true
   fi
-  rm -f "$lock_file"
+  trap - EXIT; rm -f "$lock_file" "$meta_file"
 }
 
 # Watches deputy's own open PRs (by label) for red CI and auto-triggers a fix. Forge = GitHub.
@@ -530,6 +532,7 @@ Work autonomously. When done, report the PR URL."
     echo "[$(date)] NEEDS-INPUT: $ticket_id" >> "$DAEMON_LOG_FILE"
     echo "$PROJECT_NAME" > "/tmp/deputy-paused-${ticket_id}.meta"
     echo "[$(date)] Paused waiting for your answer (reply in the dashboard)." >> "$log_file"
+    trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
     return 0
   fi
 
@@ -592,6 +595,7 @@ question or is unclear, call mcp__deputy__ask_user again to clarify instead of g
     echo "[$(date)] NEEDS-INPUT: $ticket_id" >> "$DAEMON_LOG_FILE"
     echo "$PROJECT_NAME" > "$paused_meta"
     echo "[$(date)] Paused waiting for your answer (reply in the dashboard)." >> "$log_file"
+    trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
     return 0
   fi
 
@@ -602,7 +606,7 @@ question or is unclear, call mcp__deputy__ask_user again to clarify instead of g
   fi
   cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
   git worktree prune 2>/dev/null || true
-  rm -f "$session_file"
+  trap - EXIT; rm -f "$session_file" "$lock_file" "$input_file" "$meta_file"
 }
 
 function stop_ticket() {
@@ -610,29 +614,22 @@ function stop_ticket() {
   [ -z "$ticket_id" ] && { echo "Usage: deputy stop-ticket <TICKET>"; exit 1; }
   local killed=0 lf pid wt
 
-  # Kill the job (and any continuations) via their lock PIDs + whole process subtree.
+  # Halt the agent (and any continuations) via their lock PIDs + whole process subtree.
+  # We KEEP the worktree so no uncommitted work is lost; it is reused or recreated later.
   for lf in "/tmp/deputy-item-${ticket_id}.lock" /tmp/deputy-item-${ticket_id}-cont-*.lock; do
     [ -f "$lf" ] || continue
     pid=$(cat "$lf" 2>/dev/null)
     [ -n "$pid" ] && { kill_tree "$pid"; killed=1; }
-    rm -f "$lf"
+    rm -f "$lf" "${lf%.lock}.meta"
   done
-
-  # Remove this ticket's worktree(s).
-  cd "$MAIN_PROJECT_DIR" 2>/dev/null || true
-  for wt in "${AUTOMATION_BASE_DIR}_${ticket_id}" "${AUTOMATION_BASE_DIR}_${ticket_id}"_cont_*; do
-    [ -d "$wt" ] || continue
-    git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-    killed=1
-  done
-  git worktree prune 2>/dev/null || true
 
   # Clear any parked-for-input state too.
   for f in "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-session-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta"; do
     [ -f "$f" ] && { rm -f "$f"; killed=1; }
   done
 
-  [ $killed -eq 1 ] && echo "Stopped $ticket_id." || echo "$ticket_id does not appear to be running."
+  local wt="${AUTOMATION_BASE_DIR}_${ticket_id}"
+  [ $killed -eq 1 ] && echo "Stopped $ticket_id (agent halted; worktree kept${wt:+ at $wt})." || echo "$ticket_id does not appear to be running."
   local url; url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
   [ -n "$url" ] && echo "Note: it was moved to the in-progress state when picked up; move it back if you don't want it reprocessed: $url"
 }
