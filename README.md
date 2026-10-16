@@ -83,7 +83,7 @@ bin/daemon stop-ticket <TICKET>                              # cancel one in-fli
 5. **It finishes on its own** — opens a draft PR and advances the ticket. If the PR's CI goes red, it fixes it automatically.
 6. **Cancel anything** — "call off" a single case, "stand down" a whole deputy.
 
-## Talking to deputies (no PR/Jira comments)
+## Talking to deputies
 
 ![Chatting with a deputy mid-run](docs/chat.png)
 
