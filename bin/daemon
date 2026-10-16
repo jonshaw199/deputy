@@ -42,6 +42,23 @@ MAIN_PROJECT_DIR="$(pwd)"
 PROJECT_NAME="$(basename "$MAIN_PROJECT_DIR")"
 AUTOMATION_BASE_DIR="${MAIN_PROJECT_DIR}_deputy"
 
+# Durable per-case journal (survives reboot — /tmp does not). Each case records what's
+# needed to resume it: worktree, branch, base/stack, status, and its SDK session id.
+CASES_DIR="${AUTOMATION_BASE_DIR}/cases"
+journal_file() { echo "${CASES_DIR}/${1}.json"; }
+session_file_for() { echo "${CASES_DIR}/${1}.session"; }
+# write_journal <ticket> <status> <project> <worktree> <branch> <base_kind> <stack_branch> <stack_parent>
+function write_journal() {
+  mkdir -p "$CASES_DIR"
+  jq -nc --arg t "$1" --arg s "$2" --arg p "$3" --arg w "$4" --arg b "$5" --arg bk "$6" --arg sb "$7" --arg sp "$8" \
+    '{ticket:$t,status:$s,project:$p,worktree:$w,branch:$b,base_kind:$bk,stack_branch:$sb,stack_parent:$sp}' > "$(journal_file "$1")"
+}
+function set_journal_status() {
+  local f; f=$(journal_file "$1"); [ -f "$f" ] || return 0
+  jq --arg s "$2" '.status=$s' "$f" > "${f}.tmp" 2>/dev/null && mv -f "${f}.tmp" "$f"
+}
+function clear_journal() { rm -f "$(journal_file "$1")" "$(session_file_for "$1")"; }
+
 DAEMON_PID_FILE="/tmp/deputy-${PROJECT_NAME}.pid"
 DAEMON_LOG_FILE="/tmp/deputy-${PROJECT_NAME}.log"
 DAEMON_META_FILE="/tmp/deputy-${PROJECT_NAME}.meta"
@@ -125,6 +142,8 @@ function watch_and_process() {
   # SIGUSR1 (sent by `continue` / the dashboard) drains the queue immediately
   # instead of waiting for the next poll.
   trap 'drain_continue_queue' USR1
+  # Reconnect to any cases interrupted by a kill/restart/reboot before starting the poll loop.
+  reconcile_cases
   while true; do
     echo "[$(date)] Checking for ready work items..."
 
@@ -487,7 +506,11 @@ function drain_continue_queue() {
     branch=$(echo "$line" | jq -r '.branch // empty' 2>/dev/null)
     { [ -z "$ticket" ] || [ -z "$prompt" ]; } && continue
     [ -z "$cid" ] && cid="q$(echo "$line" | cksum | cut -d' ' -f1)"
-    if [ "$kind" = "resume" ]; then
+    if [ "$kind" = "rerun" ]; then
+      echo "[$(date)] Re-run request for $ticket" >> "$DAEMON_LOG_FILE"
+      local rlock="/tmp/deputy-item-${ticket}.lock"
+      resume_or_restart "$ticket" & echo $! > "$rlock"
+    elif [ "$kind" = "resume" ]; then
       echo "[$(date)] Resume request for $ticket" >> "$DAEMON_LOG_FILE"
       local rlock="/tmp/deputy-item-${ticket}.lock"
       resume_ticket "$ticket" "$prompt" & echo $! > "$rlock"
@@ -516,6 +539,13 @@ function enqueue_request() {
 }
 function enqueue_continue() { enqueue_request "$1" "$2" continue "Usage: deputy continue <TICKET> \"<what to do>\""; }
 function enqueue_resume()   { enqueue_request "$1" "$2" resume   "Usage: deputy resume <TICKET> \"<your answer>\""; }
+# Re-run a stopped/failed case (▶): resume its session, finish its PR, or start fresh.
+function enqueue_rerun() {
+  local ticket=$1; [ -z "$ticket" ] && { echo "Usage: deputy rerun <TICKET>"; exit 1; }
+  jq -nc --arg t "$ticket" --arg k rerun --arg p rerun --arg id "cli-$(date +%s)-$$" '{ticket:$t,kind:$k,prompt:$p,id:$id}' >> "$QUEUE_FILE"
+  local dpid; dpid=$(cat "$DAEMON_PID_FILE" 2>/dev/null)
+  if [ -n "$dpid" ] && kill -USR1 "$dpid" 2>/dev/null; then echo "Re-running $ticket."; else echo "Queued rerun for $ticket (runs on next start)."; fi
+}
 
 # detect_user_worktree <ticket_id>
 # Prints the path of an existing worktree you're already working this ticket in,
@@ -600,7 +630,7 @@ function process_ticket() {
   local input_file="/tmp/deputy-input-${ticket_id}.jsonl"   # live chat channel for this agent
   local meta_file="/tmp/deputy-item-${ticket_id}.meta"      # which deputy (repo) this case belongs to
   local ask_file="/tmp/deputy-ask-${ticket_id}.txt"
-  local session_file="/tmp/deputy-session-${ticket_id}.txt"
+  local session_file; session_file=$(session_file_for "$ticket_id")  # durable: survives reboot
   local blocked_meta="/tmp/deputy-blocked-${ticket_id}.meta"
   local stack_file="/tmp/deputy-stack-${ticket_id}.json"
 
@@ -759,6 +789,9 @@ question and STOP, do not guess or open a PR, and you will be resumed with the a
 Work autonomously. When done, report the PR URL."
   fi
 
+  # Durable journal so the case can be resumed after a daemon/computer restart.
+  write_journal "$ticket_id" working "$PROJECT_NAME" "$ticket_worktree" "$branch_name" "$base_kind" "$stack_branch" "$stack_parent"
+
   local timeout_mins=$((CLAUDE_TIMEOUT_SECONDS / 60))
   echo "[$(date)] Starting agent (max ${timeout_mins} min, live chat via dashboard)..." >> "$log_file"
   run_agent "$ticket_worktree" "$prompt" "$log_file" "$input_file" "$ask_file" "$session_file"
@@ -768,6 +801,7 @@ Work autonomously. When done, report the PR URL."
   if [ -f "$ask_file" ]; then
     echo "[$(date)] NEEDS-INPUT: $ticket_id" >> "$DAEMON_LOG_FILE"
     echo "$PROJECT_NAME" > "/tmp/deputy-paused-${ticket_id}.meta"
+    set_journal_status "$ticket_id" parked
     echo "[$(date)] Paused waiting for your answer (reply in the dashboard)." >> "$log_file"
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
     return 0
@@ -794,6 +828,7 @@ Work autonomously. When done, report the PR URL."
   if [ "$failed" -eq 1 ]; then
     echo "[$(date)] FAILED: $ticket_id ($reason)" >> "$DAEMON_LOG_FILE"
     echo "$PROJECT_NAME" > "/tmp/deputy-failed-${ticket_id}.meta"
+    set_journal_status "$ticket_id" failed
     { echo "$reason"; grep -iE 'fatal:|^\[ERROR\]|CONNECT tunnel|Stream closed|rejected|permission denied|error_max_turns|not allowed' "$log_file" | tail -3; } > "/tmp/deputy-failed-${ticket_id}.txt"
     echo "[$(date)] Marked FAILED ($reason). Worktree kept at $ticket_worktree so no work is lost; restart the case to retry." >> "$log_file"
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"   # keep the worktree
@@ -817,6 +852,7 @@ Work autonomously. When done, report the PR URL."
     cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
     git worktree prune 2>/dev/null || true
   fi
+  clear_journal "$ticket_id"   # done + PR up: nothing to resume
   rm -f "$lock_file"
 }
 
@@ -829,9 +865,11 @@ function resume_ticket() {
   local input_file="/tmp/deputy-input-${ticket_id}.jsonl"
   local meta_file="/tmp/deputy-item-${ticket_id}.meta"
   local ask_file="/tmp/deputy-ask-${ticket_id}.txt"
-  local session_file="/tmp/deputy-session-${ticket_id}.txt"
+  local session_file; session_file=$(session_file_for "$ticket_id")
   local paused_meta="/tmp/deputy-paused-${ticket_id}.meta"
-  local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
+  local jf; jf=$(journal_file "$ticket_id")
+  local ticket_worktree; ticket_worktree=$(jq -r '.worktree // empty' "$jf" 2>/dev/null)
+  [ -z "$ticket_worktree" ] && ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
 
   local session; session=$(cat "$session_file" 2>/dev/null)
   if [ -z "$session" ] || [ ! -d "$ticket_worktree" ]; then
@@ -845,15 +883,22 @@ function resume_ticket() {
   [ -f "/tmp/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1
   trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
 
-  echo "[$(date)] Resuming $ticket_id with your answer" >> "$log_file"
-  echo "[YOU] $reply" >> "$log_file"
-  echo "⏳ Reconnecting to the agent..." >> "$log_file"
-
-  local prompt="The user replied to your question: $reply
+  set_journal_status "$ticket_id" working
+  local prompt
+  if [ "$reply" = "__continue__" ]; then
+    echo "[$(date)] Resuming interrupted $ticket_id (continue where it left off)" >> "$log_file"
+    echo "⏳ Reconnecting to the agent..." >> "$log_file"
+    prompt="You were interrupted (the daemon or machine restarted). Resume exactly where you left off and finish the work: first check the current state (git status, and whether a PR already exists for this branch), then implement anything still missing, run the relevant tests, commit, push, and open or update the draft PR. Do NOT redo work that is already committed."
+  else
+    echo "[$(date)] Resuming $ticket_id with your answer" >> "$log_file"
+    echo "[YOU] $reply" >> "$log_file"
+    echo "⏳ Reconnecting to the agent..." >> "$log_file"
+    prompt="The user replied to your question: $reply
 
 If that reply actually answers what you asked, proceed and finish the work (implement, test,
 commit, push, open or update the draft PR, and mark the item done). If it does NOT answer your
 question or is unclear, call mcp__deputy__ask_user again to clarify instead of guessing."
+  fi
 
   run_agent "$ticket_worktree" "$prompt" "$log_file" "$input_file" "$ask_file" "$session_file" "$session"
   local exit_code=$?
@@ -861,28 +906,104 @@ question or is unclear, call mcp__deputy__ask_user again to clarify instead of g
   if [ -f "$ask_file" ]; then
     echo "[$(date)] NEEDS-INPUT: $ticket_id" >> "$DAEMON_LOG_FILE"
     echo "$PROJECT_NAME" > "$paused_meta"
+    set_journal_status "$ticket_id" parked
     echo "[$(date)] Paused waiting for your answer (reply in the dashboard)." >> "$log_file"
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
     return 0
   fi
 
-  if [ $exit_code -eq 0 ]; then
-    echo "[$(date)] SUCCESS: $ticket_id (resumed)" >> "$DAEMON_LOG_FILE"
-  else
-    echo "[$(date)] FAILED: $ticket_id (resumed, exit $exit_code)" >> "$DAEMON_LOG_FILE"
+  # Self-correct / never-vanish, same as a fresh run: recover the PR if the agent couldn't,
+  # else keep the worktree and mark it failed (visible) instead of silently deleting it.
+  local made_pr=0
+  grep -qiE 'github\.com/[^ ]+/pull/[0-9]+' "$log_file" && made_pr=1
+  local jbranch jstack
+  jbranch=$(jq -r '.branch // empty' "$jf" 2>/dev/null)
+  jstack=$(jq -r '.stack_branch // empty' "$jf" 2>/dev/null)
+  if [ "$made_pr" -eq 0 ] && [ -n "$jbranch" ]; then
+    recover_pr "$ticket_id" "$jbranch" "$log_file" "$jstack" && made_pr=1
   fi
-  cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
-  git worktree prune 2>/dev/null || true
-  trap - EXIT; rm -f "$session_file" "$lock_file" "$input_file" "$meta_file"
+
+  if [ $exit_code -ne 0 ] && [ "$made_pr" -eq 0 ]; then
+    echo "[$(date)] FAILED: $ticket_id (resumed, exit $exit_code)" >> "$DAEMON_LOG_FILE"
+    echo "$PROJECT_NAME" > "/tmp/deputy-failed-${ticket_id}.meta"
+    set_journal_status "$ticket_id" failed
+    { echo "resumed run failed (exit $exit_code)"; grep -iE 'fatal:|^\[ERROR\]|CONNECT tunnel|Stream closed|rejected|permission denied|error_max_turns' "$log_file" | tail -3; } > "/tmp/deputy-failed-${ticket_id}.txt"
+    trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"   # keep the worktree
+    return 0
+  fi
+
+  echo "[$(date)] SUCCESS: $ticket_id (resumed)" >> "$DAEMON_LOG_FILE"
+  # Only clean up a deputy-created worktree, never a shared/user one.
+  case "$ticket_worktree" in
+    "${AUTOMATION_BASE_DIR}"*) cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"; git worktree prune 2>/dev/null || true ;;
+    *) echo "[$(date)] Leaving your shared worktree in place." >> "$log_file" ;;
+  esac
+  clear_journal "$ticket_id"
+  trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
 }
 
+# resume_or_restart <ticket> — bring a case back: resume its saved SDK session if the
+# worktree + session survive; else finish the push/PR if the branch has work; else re-run
+# from scratch. Used by reconcile-on-start and the dashboard ▶ re-run button.
+function resume_or_restart() {
+  local ticket_id=$1
+  local jf; jf=$(journal_file "$ticket_id")
+  local log_file="/tmp/deputy-item-${ticket_id}.log"
+  rm -f "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt" "/tmp/deputy-stopped-${ticket_id}.meta"
+  local session wt branch stack
+  session=$(cat "$(session_file_for "$ticket_id")" 2>/dev/null)
+  wt=$(jq -r '.worktree // empty' "$jf" 2>/dev/null)
+  branch=$(jq -r '.branch // empty' "$jf" 2>/dev/null)
+  stack=$(jq -r '.stack_branch // empty' "$jf" 2>/dev/null)
+
+  if [ -n "$session" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
+    resume_ticket "$ticket_id" "__continue__"; return
+  fi
+  echo "$PROJECT_NAME" > "/tmp/deputy-item-${ticket_id}.meta"
+  if [ -n "$branch" ] && recover_pr "$ticket_id" "$branch" "$log_file" "$stack"; then
+    echo "[$(date)] Re-run: finished $ticket_id's PR without a full re-run" >> "$DAEMON_LOG_FILE"
+    clear_journal "$ticket_id"; rm -f "/tmp/deputy-item-${ticket_id}.lock" "/tmp/deputy-item-${ticket_id}.meta"; return
+  fi
+  echo "[$(date)] Re-run: starting $ticket_id from scratch" >> "$DAEMON_LOG_FILE"
+  clear_journal "$ticket_id"; rm -f "/tmp/deputy-item-${ticket_id}.lock"
+  process_ticket "$ticket_id"
+}
+
+# reconcile_cases — on daemon start, reconnect to cases interrupted by a kill/restart/reboot.
+# The durable journal (in <repo>_deputy/cases) is the source of truth; /tmp is ephemeral.
+function reconcile_cases() {
+  [ -d "$CASES_DIR" ] || return 0
+  local f ticket proj status lock
+  for f in "$CASES_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    ticket=$(jq -r '.ticket // empty' "$f" 2>/dev/null)
+    proj=$(jq -r '.project // empty' "$f" 2>/dev/null)
+    status=$(jq -r '.status // empty' "$f" 2>/dev/null)
+    [ -z "$ticket" ] && continue
+    [ "$proj" = "$PROJECT_NAME" ] || continue
+    lock="/tmp/deputy-item-${ticket}.lock"
+    if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then continue; fi  # still alive
+    rm -f "$lock"   # stale lock from a killed agent
+    case "$status" in
+      working)  # interrupted mid-run → bring it back
+        echo "[$(date)] Reconcile: $ticket was interrupted; resuming" >> "$DAEMON_LOG_FILE"
+        resume_or_restart "$ticket" & echo $! > "$lock" ;;
+      failed)   # rehydrate the /tmp marker (wiped on reboot) so it stays visible
+        echo "$proj" > "/tmp/deputy-failed-${ticket}.meta"
+        [ -f "/tmp/deputy-failed-${ticket}.txt" ] || echo "the run failed before the last restart" > "/tmp/deputy-failed-${ticket}.txt" ;;
+      stopped)
+        echo "$proj" > "/tmp/deputy-stopped-${ticket}.meta" ;;
+    esac
+  done
+}
+
+# stop-ticket: halt the agent but KEEP everything needed to bring it back (worktree, branch,
+# saved session, journal). The case becomes a "stopped" card with a ▶ re-run button.
 function stop_ticket() {
   local ticket_id=$1
   [ -z "$ticket_id" ] && { echo "Usage: deputy stop-ticket <TICKET>"; exit 1; }
-  local killed=0 lf pid wt
+  local killed=0 lf pid
 
-  # Halt the agent (and any continuations) via their lock PIDs + whole process subtree.
-  # We KEEP the worktree so no uncommitted work is lost; it is reused or recreated later.
   for lf in "/tmp/deputy-item-${ticket_id}.lock" /tmp/deputy-item-${ticket_id}-cont-*.lock; do
     [ -f "$lf" ] || continue
     pid=$(cat "$lf" 2>/dev/null)
@@ -890,18 +1011,77 @@ function stop_ticket() {
     rm -f "$lf" "${lf%.lock}.meta"
   done
 
-  # Clear any parked-for-input, blocked, failed, or stack-tracking state too.
-  for f in "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-session-${ticket_id}.txt" \
-           "/tmp/deputy-paused-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.meta" \
-           "/tmp/deputy-blocked-${ticket_id}.txt" "/tmp/deputy-stack-${ticket_id}.json" \
-           "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt"; do
-    [ -f "$f" ] && { rm -f "$f"; killed=1; }
-  done
+  # Clear only the transient in-flight markers; keep the durable journal + session + worktree.
+  rm -f "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta" \
+        "/tmp/deputy-blocked-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.txt" \
+        "/tmp/deputy-stack-${ticket_id}.json" "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt"
 
+  if [ -f "$(journal_file "$ticket_id")" ]; then
+    set_journal_status "$ticket_id" stopped
+    echo "$PROJECT_NAME" > "/tmp/deputy-stopped-${ticket_id}.meta"   # stays on the board as a stopped card
+    killed=1
+  fi
+  [ $killed -eq 1 ] && echo "Stopped $ticket_id (halted; kept so you can ▶ re-run it)." || echo "$ticket_id does not appear to be active."
+}
+
+# forget-ticket: the real delete — halt, drop the worktree, and clear all state.
+function forget_ticket() {
+  local ticket_id=$1
+  [ -z "$ticket_id" ] && { echo "Usage: deputy forget-ticket <TICKET>"; exit 1; }
+  local lf pid
+  for lf in "/tmp/deputy-item-${ticket_id}.lock" /tmp/deputy-item-${ticket_id}-cont-*.lock; do
+    [ -f "$lf" ] || continue; pid=$(cat "$lf" 2>/dev/null); [ -n "$pid" ] && kill_tree "$pid"; rm -f "$lf" "${lf%.lock}.meta"
+  done
+  rm -f "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta" \
+        "/tmp/deputy-blocked-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.txt" \
+        "/tmp/deputy-stack-${ticket_id}.json" "/tmp/deputy-failed-${ticket_id}.meta" \
+        "/tmp/deputy-failed-${ticket_id}.txt" "/tmp/deputy-stopped-${ticket_id}.meta" "/tmp/deputy-item-${ticket_id}.meta"
+  clear_journal "$ticket_id"
   local wt="${AUTOMATION_BASE_DIR}_${ticket_id}"
-  [ $killed -eq 1 ] && echo "Stopped $ticket_id (agent halted; worktree kept${wt:+ at $wt})." || echo "$ticket_id does not appear to be running."
-  local url; url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
-  [ -n "$url" ] && echo "Note: it was moved to the in-progress state when picked up; move it back if you don't want it reprocessed: $url"
+  [ -d "$wt" ] && { cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; git worktree prune 2>/dev/null || true; }
+  echo "Forgot $ticket_id (removed its worktree + state)."
+}
+
+# Auto-start at login so a reboot brings Deputy (and its interrupted cases) back by itself.
+# launchd supervises the foreground loop; on login it starts, and reconcile_cases resumes work.
+function autostart_install() {
+  local dir="$HOME/Library/LaunchAgents" plist
+  plist="$dir/com.deputy.${PROJECT_NAME}.plist"
+  mkdir -p "$dir"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.deputy.${PROJECT_NAME}</string>
+  <key>ProgramArguments</key><array><string>${DAEMON_BIN}</string><string>foreground</string></array>
+  <key>WorkingDirectory</key><string>${MAIN_PROJECT_DIR}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${DAEMON_LOG_FILE}</string>
+  <key>StandardErrorPath</key><string>${DAEMON_LOG_FILE}</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+</dict></plist>
+PLIST
+  launchctl unload "$plist" 2>/dev/null || true
+  launchctl load "$plist" 2>/dev/null && echo "Autostart installed: $plist" || echo "Wrote $plist (run: launchctl load \"$plist\")"
+}
+function autostart_uninstall() {
+  local plist="$HOME/Library/LaunchAgents/com.deputy.${PROJECT_NAME}.plist"
+  launchctl unload "$plist" 2>/dev/null || true
+  rm -f "$plist"
+  echo "Autostart removed for $PROJECT_NAME"
+}
+# Foreground supervised loop (used by launchd): set up, then run the loop without forking so
+# the supervisor can keep it alive and restart it on crash/reboot.
+function run_foreground() {
+  if [ -f "$DAEMON_PID_FILE" ] && ps -p "$(cat "$DAEMON_PID_FILE")" >/dev/null 2>&1; then
+    echo "Daemon already running (PID: $(cat "$DAEMON_PID_FILE"))"; exit 0
+  fi
+  preflight_tracker; ensure_deps
+  echo "$MAIN_PROJECT_DIR" > "$DAEMON_META_FILE"
+  echo $$ > "$DAEMON_PID_FILE"
+  trap 'rm -f "$DAEMON_PID_FILE" "$DAEMON_META_FILE"' EXIT
+  watch_and_process
 }
 
 case "$1" in
@@ -909,9 +1089,14 @@ case "$1" in
   stop)        stop_daemon ;;
   restart)     [ -f "$DAEMON_PID_FILE" ] && stop_daemon; sleep 1; start_daemon ;;
   status)      status_daemon ;;
+  foreground)  run_foreground ;;             # internal: supervised (launchd) foreground loop
+  autostart-install)   autostart_install ;;  # run Deputy automatically at login (survives reboot)
+  autostart-uninstall) autostart_uninstall ;;
   continue)    enqueue_continue "$2" "$3" ;;   # deputy continue <TICKET> "<what to do>"
   resume)      enqueue_resume "$2" "$3" ;;     # deputy resume <TICKET> "<answer>"  (answer a parked case)
+  rerun)       enqueue_rerun "$2" ;;           # deputy rerun <TICKET>  (bring back a stopped/failed case)
+  forget-ticket) forget_ticket "$2" ;;         # deputy forget-ticket <TICKET>  (delete worktree + state)
   stop-ticket) stop_ticket "$2" ;;             # cancel one in-flight ticket
   __run)       watch_and_process ;;            # internal: the backgrounded poll loop
-  *) echo "Usage: $0 {start|stop|restart|status|continue <TICKET> \"<prompt>\"|resume <TICKET> \"<answer>\"|stop-ticket <TICKET>}"; exit 1 ;;
+  *) echo "Usage: $0 {start|stop|restart|status|autostart-install|autostart-uninstall|continue <TICKET> \"<prompt>\"|resume <TICKET> \"<answer>\"|rerun <TICKET>|stop-ticket <TICKET>|forget-ticket <TICKET>}"; exit 1 ;;
 esac

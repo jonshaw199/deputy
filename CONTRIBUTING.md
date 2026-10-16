@@ -118,8 +118,35 @@ deputy-ask-<ticket>.txt                   a parked case's question (present => n
 deputy-session-<ticket>.txt               the SDK session id, for resuming after a pause
 deputy-paused-<ticket>.meta               a parked case's owning repo
 deputy-blocked-<ticket>.meta / .txt       a dependency-blocked case: owning repo + reason
+deputy-failed-<ticket>.meta / .txt        a run that produced no PR: owning repo + error
+deputy-stopped-<ticket>.meta              a case you stopped (✕) but kept, re-runnable with ▶
 deputy-stack-<ticket>.json                a stacked PR's parent/child branches + last parent sha
 ```
+
+Durable state (survives reboot — `/tmp` does not) lives under `<repo>_deputy/cases/`:
+
+```
+cases/<ticket>.json       the case journal: status, worktree, branch, base/stack, project
+cases/<ticket>.session    the SDK session id (written live, the instant it's known)
+```
+
+## Resilience (resume after restart / reboot / ✕)
+
+A case's durable truth is the journal + session above; `/tmp` is just the live view. The
+runner writes the session id on the *first* message, so a killed agent is still resumable.
+
+- **Daemon/computer restart:** `reconcile_cases` runs at startup. For each journal left in
+  `working` (i.e. interrupted) it `resume_or_restart`s: resume the SDK session in its worktree,
+  else finish the push/PR if the branch has work, else re-run from scratch. Stale locks from
+  killed agents are cleared; `failed`/`stopped` journals rehydrate their `/tmp` markers so the
+  cards reappear.
+- **No run vanishes:** a run that ends without a PR is recovered by the daemon (it pushes the
+  branch + opens the PR itself, outside the agent sandbox); only if there's nothing to recover
+  does it become a visible red `failed` card.
+- **✕ then change your mind:** `stop-ticket` keeps the journal/worktree/session and shows a
+  muted `stopped` card; ▶ (`rerun`) brings it back, `forget-ticket` deletes it for real.
+- **Survive a reboot:** `bin/daemon autostart-install` writes a macOS LaunchAgent that runs
+  `bin/daemon foreground` (supervised) at login, so the daemon comes back and reconciles on its own.
 
 ## Adding a tracker
 

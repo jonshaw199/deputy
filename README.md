@@ -40,6 +40,12 @@ worktree (or the one you already have open, if you're collaborating).
   list (author, `file:line`, link). You tell it what to fix in the reply box; it edits
   and pushes, and posts nothing on the PR. You stay the only voice there. Finished PRs
   stay promptable, so you can send more work after a case is "done."
+- **Survives restarts — nothing is lost** — each case's worktree, branch, and live agent
+  session are journaled to disk. On a daemon restart, reboot, or crash, Deputy reconnects and
+  resumes interrupted cases where they left off. A run that can't open its PR is finished by
+  the daemon itself (reliable push outside the agent sandbox); if it truly can't, it shows as a
+  red **failed** card instead of vanishing. Stop a case with ✕ and it stays as a **stopped**
+  card you can **▶ re-run** anytime. Install the login agent and it even comes back after a reboot.
 - **Stops and asks instead of guessing** — when a ticket is ambiguous or needs a
   decision, the deputy parks the case, shows its question ("needs your call"), and
   waits. You answer and it resumes the exact same session (works even after it exits,
@@ -94,9 +100,12 @@ npm run dashboard        # http://localhost:4319
 Other commands:
 
 ```bash
-bin/daemon restart
+bin/daemon restart                                          # in-flight cases resume automatically
 bin/daemon continue <TICKET> "also handle the empty state"   # follow-up on its PR
-bin/daemon stop-ticket <TICKET>                              # cancel one in-flight job
+bin/daemon stop-ticket <TICKET>                              # stop one case (kept; ▶ re-runnable)
+bin/daemon rerun <TICKET>                                   # bring a stopped/failed case back
+bin/daemon forget-ticket <TICKET>                           # delete a case + its worktree
+bin/daemon autostart-install                                # run at login, survive a reboot
 ```
 
 ## Day to day

@@ -8,6 +8,7 @@ const linkTickets = (s) => esc(String(s || '')).replace(/\b([A-Z][A-Z0-9]+-\d+)\
 // Sharp pistol silhouette (emoji 🔫 renders as a toy water gun on macOS).
 const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="3" y="7" width="18" height="3.2" rx=".6"/><path d="M7 10l-1.6 6a1 1 0 0 0 1 1.3h2.4a1 1 0 0 0 1-.7L11.6 10z"/><rect x="18.4" y="5.7" width="2.6" height="2" rx=".4"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+const PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 5l12 7-12 7z"/></svg>';
 
 let logTarget = null; // { ticket } or { daemon } currently shown in the modal
 
@@ -29,6 +30,7 @@ function caseRow(c) {
   const review = c.state === 'in-review';
   const blocked = c.state === 'blocked';
   const failed = c.state === 'failed';
+  const stopped = c.state === 'stopped';
   const live = !review;
   const n = (c.comments || []).length;
   const chip = n ? `<span class="chip">💬 ${n}</span>` : '';
@@ -37,26 +39,31 @@ function caseRow(c) {
     c.pr ? `<a href="${c.pr}" target="_blank">PR</a>` : '',
   ].filter(Boolean).join(' · ');
 
-  // One colour per state: blue = working, amber = needs your call, grey = blocked, red = failed, green = in review.
-  const dot = c.state === 'needs-input' ? 'warn' : failed ? 'fail' : blocked ? 'wait' : review ? 'ok' : 'busy';
+  // One colour per state: blue = working, amber = needs you, grey = blocked/stopped, red = failed, green = in review.
+  const dot = c.state === 'needs-input' ? 'warn' : failed ? 'fail' : (blocked || stopped) ? 'wait' : review ? 'ok' : 'busy';
   const dotTitle = c.state === 'needs-input' ? 'Needs your call'
-    : failed ? 'Failed — needs your attention' : blocked ? 'Blocked — waiting on a dependency' : review ? 'In review' : 'Working';
+    : failed ? 'Failed — needs your attention' : stopped ? 'Stopped — ▶ to re-run' : blocked ? 'Blocked — waiting on a dependency' : review ? 'In review' : 'Working';
   const detail = c.state === 'needs-input'
     ? `<div class="sub question">📻 <b>Needs your call:</b> ${trunc(c.question, 220)}</div>`
     : failed
-    ? `<div class="sub failed-note">⚠️ <b>Failed:</b> ${linkTickets(c.phase)} <span class="muted">· work kept; ✕ to dismiss</span></div>`
+    ? `<div class="sub failed-note">⚠️ <b>Failed:</b> ${linkTickets(c.phase)} <span class="muted">· ▶ to retry · ✕ to forget</span></div>`
+    : stopped
+    ? `<div class="sub blocked-note">⏸ <b>Stopped</b> <span class="muted">· ▶ to re-run · ✕ to forget</span></div>`
     : blocked
     ? `<div class="sub blocked-note">⛓️ <b>Blocked:</b> ${linkTickets(c.phase)} <span class="muted">· will start once its dependency has a branch</span></div>`
     : `<div class="sub">${trunc(review ? c.title : c.phase, 180)}</div>`;
 
   const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: don't ask me questions, just decide and keep going">${GUN}</span>`;
-  // ✕ on every case: stops a live agent, drops a blocked/failed one, or dismisses a finished in-review case.
-  const xTitle = failed ? 'Dismiss this failed case (worktree kept on disk)' : blocked ? 'Drop this blocked case' : live ? 'Stop: halt the agent (keeps the worktree)' : 'Hide this finished case (comes back only if a new review comment lands)';
+  // ▶ re-run on a stopped/failed case (resume if possible, else finish/restart).
+  const canRerun = failed || stopped;
+  const rerun = canRerun ? `<span class="iconbtn" data-rerun title="Re-run: bring this case back (resumes where it left off if it can)">${PLAY}</span>` : '';
+  // ✕: forget a stopped/failed case, stop a live one, drop a blocked one, dismiss an in-review one.
+  const xTitle = (failed || stopped) ? 'Forget: remove this case + its worktree' : blocked ? 'Drop this blocked case' : live ? 'Stop: halt the agent (keeps the worktree)' : 'Hide this finished case (comes back only if a new review comment lands)';
   const stop = `<span class="iconbtn danger" data-x title="${xTitle}">${X_ICON}</span>`;
   const row = el('div', c.state === 'needs-input' ? 'case needs-input' : 'case');
   row.innerHTML = `
     <div class="case-head"><span class="dot ${dot}" title="${dotTitle}"></span> <b>${esc(c.ticket)}</b> ${chip}
-      <span class="case-actions">${gun}${stop}</span></div>
+      <span class="case-actions">${gun}${rerun}${stop}</span></div>
     ${detail}
     ${links ? `<div class="sub">${links}</div>` : ''}`;
   row.style.cursor = 'pointer';
@@ -67,14 +74,23 @@ function caseRow(c) {
   };
   row.onclick = review
     ? () => openLog({ pr: { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] }, project: c.project }, `${c.ticket} · review`)
-    : () => openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input', blocked, failed }, `${c.ticket} · case log`);
+    : () => openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input', blocked, failed, stopped }, `${c.ticket} · case log`);
+  const rerunBtn = row.querySelector('[data-rerun]');
+  if (rerunBtn) rerunBtn.onclick = async (e) => {
+    e.stopPropagation();
+    await api('/api/rerun', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, project: c.project }) });
+    refresh();
+  };
   row.querySelector('[data-x]').onclick = async (e) => {
     e.stopPropagation();
     if (review) {
       if (!confirm(`Hide ${c.ticket}? It's in review with nothing to do; it'll reappear only if a new review comment lands.`)) return;
       await api('/api/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, commentUrls: (c.comments || []).map((x) => x.url) }) });
+    } else if (failed || stopped) {
+      if (!confirm(`Forget ${c.ticket}? Removes its worktree and state (▶ re-run instead to keep it).`)) return;
+      await api('/api/forget', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, project: c.project }) });
     } else {
-      const msg = failed ? `Dismiss failed case ${c.ticket}? Its worktree stays on disk; restart it to retry.` : blocked ? `Drop blocked case ${c.ticket}? It will no longer be tracked until it's labelled again.` : `Stop ${c.ticket}? (halts the agent; keeps the worktree)`;
+      const msg = blocked ? `Drop blocked case ${c.ticket}? It will no longer be tracked until it's labelled again.` : `Stop ${c.ticket}? (halts the agent; keeps the worktree so you can ▶ re-run it)`;
       if (!confirm(msg)) return;
       await api('/api/stop-case', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket }) });
     }
@@ -92,7 +108,8 @@ function renderDeputies(daemons, orphans) {
     const cases = d.cases || [];
     const failedCount = cases.filter((c) => c.state === 'failed').length;
     const blockedCount = cases.filter((c) => c.state === 'blocked').length;
-    const working = cases.filter((c) => !['in-review', 'blocked', 'failed'].includes(c.state)).length;
+    const stoppedCount = cases.filter((c) => c.state === 'stopped').length;
+    const working = cases.filter((c) => !['in-review', 'blocked', 'failed', 'stopped'].includes(c.state)).length;
     const review = cases.filter((c) => c.state === 'in-review').length;
     const card = el('div', 'card');
     const dot = !d.running ? 'off' : failedCount ? 'fail' : working ? 'busy' : 'ok';
@@ -103,6 +120,7 @@ function renderDeputies(daemons, orphans) {
       if (working) parts.push(`on ${working} case${working > 1 ? 's' : ''}`);
       if (review) parts.push(`${review} in review`);
       if (blockedCount) parts.push(`${blockedCount} blocked`);
+      if (stoppedCount) parts.push(`${stoppedCount} stopped`);
       if (failedCount) parts.push(`⚠️ ${failedCount} failed`);
       status = parts.join(' · ') || 'on patrol';
     }
@@ -175,7 +193,7 @@ async function openLog(target, title) {
   logTarget = target;
   pendingEcho = ''; pendingResume = false;
   $('#logTitle').textContent = title;
-  const canReply = !!((target.ticket && !target.blocked && !target.failed) || target.pr);
+  const canReply = !!((target.ticket && !target.blocked && !target.failed && !target.stopped) || target.pr);
   $('#logReply').classList.toggle('hidden', !canReply);
   if (target.ticket) $('#replyInput').placeholder = target.needsInput ? 'Answer the deputy…' : 'Reply to this agent…';
   if (target.pr) $('#replyInput').placeholder = (target.pr.comments || []).length ? 'Extra guidance (optional)…' : 'Tell Deputy what to do…';

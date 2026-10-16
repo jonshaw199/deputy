@@ -141,6 +141,18 @@ export function makeServer(opts = {}) {
         return { ticket, project, state: 'failed', phase: reason, item: itemUrlIn(log), pr: prUrlIn(log) };
       });
   }
+  // Cases the user stopped (✕) but kept — re-runnable with ▶. Shown as muted "stopped" cards.
+  function listStopped() {
+    return readdirSync(TMP)
+      .map((f) => f.match(/^deputy-stopped-(.+)\.meta$/))
+      .filter(Boolean)
+      .map((m) => {
+        const ticket = m[1];
+        const log = tail(join(TMP, `deputy-item-${ticket}.log`), Infinity);
+        const project = tail(join(TMP, `deputy-stopped-${ticket}.meta`)).trim() || null;
+        return { ticket, project, state: 'stopped', phase: 'stopped by you', item: itemUrlIn(log), pr: prUrlIn(log) };
+      });
+  }
   // Open PRs + unresolved review comments the daemon published (deputy never replies).
   const readPrs = (project) => {
     try { return JSON.parse(readFileSync(join(TMP, `deputy-prs-${project}.json`), 'utf8')); } catch { return []; }
@@ -163,11 +175,12 @@ export function makeServer(opts = {}) {
   // Fold live agents and open PRs into one case per ticket. A ticket with a live
   // agent is working / needs-input (and keeps its PR + comments if it has one); a
   // ticket with only an open PR is in-review. Live cases first, then in-review.
-  function mergeCases(live, prs, blocked, failed, project) {
+  function mergeCases(live, prs, blocked, failed, stopped, project) {
     const byTicket = new Map();
     for (const a of live) byTicket.set(a.ticket, { ...a, state: a.needsInput ? 'needs-input' : 'working' });
     for (const b of blocked) if (!byTicket.has(b.ticket)) byTicket.set(b.ticket, b);
     for (const f of failed) if (!byTicket.has(f.ticket)) byTicket.set(f.ticket, f);
+    for (const s of stopped) if (!byTicket.has(s.ticket)) byTicket.set(s.ticket, s);
     for (const p of prs) {
       const key = p.ticket || `PR-${p.number}`;
       const ex = byTicket.get(p.ticket);
@@ -196,9 +209,10 @@ export function makeServer(opts = {}) {
       const live = liveOrPaused();
       const blocked = listBlocked();
       const failed = listFailed();
+      const stopped = listStopped();
       // One case per ticket: a live agent (working / needs-input), a dependency-blocked
-      // case waiting to start, a failed run, and its open PR (in-review) all merge here.
-      for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), blocked.filter((b) => b.project === d.project), failed.filter((f) => f.project === d.project), d.project);
+      // case, a failed or stopped run, and its open PR (in-review) all merge here.
+      for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), blocked.filter((b) => b.project === d.project), failed.filter((f) => f.project === d.project), stopped.filter((s) => s.project === d.project), d.project);
       const orphans = live.filter((a) => !daemons.some((d) => d.project === a.project))
         .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working', auto: isAuto(a.ticket) }));
       return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
@@ -240,6 +254,15 @@ export function makeServer(opts = {}) {
       const cwd = (daemons.find((d) => d.project === c?.project) || daemons.find((d) => d.repoDir))?.repoDir;
       if (!cwd) return json(res, 400, { error: 'no repo for that case' });
       return json(res, 200, await runDaemon(cwd, 'stop-ticket', ticket));
+    }
+    if ((path === '/api/rerun' || path === '/api/forget') && req.method === 'POST') {
+      // ▶ re-run a stopped/failed case, or forget it entirely. Both shell to the daemon.
+      const { ticket, project } = await readBody(req);
+      if (!ticket) return json(res, 400, { error: 'ticket required' });
+      const daemons = listDaemons();
+      const cwd = (daemons.find((d) => d.project === project) || daemons.find((d) => d.repoDir))?.repoDir;
+      if (!cwd) return json(res, 400, { error: 'no repo for that case' });
+      return json(res, 200, await runDaemon(cwd, path === '/api/rerun' ? 'rerun' : 'forget-ticket', ticket));
     }
     if (path === '/api/dismiss' && req.method === 'POST') {
       // Hide a finished in-review case; it reappears only if a new (non-snapshot) comment lands.

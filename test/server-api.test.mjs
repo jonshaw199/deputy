@@ -34,6 +34,9 @@ before(async () => {
   writeFileSync(join(dir, 'deputy-failed-WEB-600.meta'), 'webapp');
   writeFileSync(join(dir, 'deputy-failed-WEB-600.txt'), 'finished without opening a PR (the push or PR step failed)\nfatal: CONNECT tunnel failed, response 403');
   writeFileSync(join(dir, 'deputy-item-WEB-600.log'), 'ITEM_URL: https://acme.atlassian.net/browse/WEB-600\n');
+  // A case the user stopped (✕) but kept — must stay visible as a re-runnable "stopped" card.
+  writeFileSync(join(dir, 'deputy-stopped-WEB-700.meta'), 'webapp');
+  writeFileSync(join(dir, 'deputy-item-WEB-700.log'), 'ITEM_URL: https://acme.atlassian.net/browse/WEB-700\n');
   // Open PRs the daemon published: one in review with comments, one whose ticket is a live case.
   writeFileSync(join(dir, 'deputy-prs-webapp.json'), JSON.stringify([
     { number: 482, title: 'feat: empty state [WEB-290]', url: 'https://x/pull/482', branch: 'dev/web-290', ticket: 'WEB-290', comments: [{ author: 'alex', path: 'a.ts', line: 44, body: 'debounce this', url: 'https://x/482#r1' }] },
@@ -114,6 +117,19 @@ test('GET /api/status surfaces a failed case (no PR) with its error, not hidden'
   assert.equal(f.state, 'failed');
   assert.match(f.phase, /without opening a PR|CONNECT tunnel/);
   assert.equal(f.item, 'https://acme.atlassian.net/browse/WEB-600');
+});
+
+test('GET /api/status shows a stopped case as re-runnable, not gone', async () => {
+  const s = await (await get('/api/status')).json();
+  const web = s.daemons.find((x) => x.project === 'webapp');
+  const st = web.cases.find((c) => c.ticket === 'WEB-700');
+  assert.equal(st.state, 'stopped');
+  assert.equal(st.item, 'https://acme.atlassian.net/browse/WEB-700');
+});
+
+test('POST /api/rerun and /api/forget require a ticket', async () => {
+  assert.equal((await post('/api/rerun', {})).status, 400);
+  assert.equal((await post('/api/forget', {})).status, 400);
 });
 
 test('POST /api/continue queues a follow-up carrying the PR branch', async () => {
