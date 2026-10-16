@@ -372,6 +372,21 @@ function enqueue_request() {
 function enqueue_continue() { enqueue_request "$1" "$2" continue "Usage: deputy continue <TICKET> \"<what to do>\""; }
 function enqueue_resume()   { enqueue_request "$1" "$2" resume   "Usage: deputy resume <TICKET> \"<your answer>\""; }
 
+# detect_user_worktree <ticket_id>
+# Prints the path of an existing worktree you're already working this ticket in,
+# found via its open PR: ticket -> PR -> head branch -> checked-out worktree.
+# Empty when there's no PR or the branch isn't checked out locally.
+function detect_user_worktree() {
+  local ticket_id=$1
+  command -v gh >/dev/null 2>&1 || return 0
+  local branch
+  branch=$(cd "$MAIN_PROJECT_DIR" && gh pr list --state open --search "$ticket_id" --json headRefName --jq '.[0].headRefName' 2>/dev/null)
+  [ -z "$branch" ] && return 0
+  cd "$MAIN_PROJECT_DIR" && git worktree list --porcelain \
+    | awk -v b="refs/heads/$branch" '/^worktree /{w=substr($0,10)} $0=="branch " b{print w}' \
+    | grep -v "^$MAIN_PROJECT_DIR\$" | head -1
+}
+
 function process_ticket() {
   local ticket_id=$1
   local log_file="/tmp/deputy-item-${ticket_id}.log"
@@ -394,29 +409,71 @@ function process_ticket() {
   node "$TRACKER_CLI" start "$ticket_id" >> "$log_file" 2>&1 \
     || echo "[$(date)] WARN: markStarted failed for $ticket_id" >> "$log_file"
 
-  echo "[$(date)] Creating worktree for $ticket_id..." >> "$log_file"
   if ! cd "$MAIN_PROJECT_DIR"; then
     echo "[$(date)] FAILED: $ticket_id (cd failed)" >> "$DAEMON_LOG_FILE"
     rm -f "$lock_file"; return 1
   fi
-  if [ -d "$ticket_worktree" ]; then
-    git worktree remove --force "$ticket_worktree" 2>/dev/null || true
-    rm -rf "$ticket_worktree" 2>/dev/null || true
-  fi
-  git worktree prune 2>/dev/null || true
-  if ! git worktree add --detach "$ticket_worktree" origin/main >> "$log_file" 2>&1; then
-    echo "[$(date)] FAILED: $ticket_id (worktree creation failed)" >> "$DAEMON_LOG_FILE"
-    rm -f "$lock_file"; return 1
-  fi
 
-  setup_worktree "$ticket_worktree" "$log_file"
+  # If you already have this ticket's branch open in a worktree, work there with you.
+  local collaborating=0
+  local user_wt; user_wt=$(detect_user_worktree "$ticket_id")
+  if [ -n "$user_wt" ] && [ -d "$user_wt" ]; then
+    collaborating=1
+    ticket_worktree="$user_wt"
+    export DEPUTY_SDK_DIR="$AUTOMATION_BASE_DIR/node_modules"
+    echo "[$(date)] Collaborating in your worktree: $user_wt" >> "$log_file"
+  else
+    echo "[$(date)] Creating worktree for $ticket_id..." >> "$log_file"
+    if [ -d "$ticket_worktree" ]; then
+      git worktree remove --force "$ticket_worktree" 2>/dev/null || true
+      rm -rf "$ticket_worktree" 2>/dev/null || true
+    fi
+    git worktree prune 2>/dev/null || true
+    if ! git worktree add --detach "$ticket_worktree" origin/main >> "$log_file" 2>&1; then
+      echo "[$(date)] FAILED: $ticket_id (worktree creation failed)" >> "$DAEMON_LOG_FILE"
+      rm -f "$lock_file"; return 1
+    fi
+    setup_worktree "$ticket_worktree" "$log_file"
+  fi
 
   local branch_name; branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]')
   local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
   local pr_ref;   pr_ref=$(node "$TRACKER_CLI" ref "$ticket_id" 2>/dev/null)
   [ -n "$item_url" ] && echo "[$(date)] ITEM_URL: $item_url" >> "$log_file"
 
-  local prompt="Implement work item $ticket_id
+  local prompt
+  if [ "$collaborating" -eq 1 ]; then
+    prompt="Continue work item $ticket_id in a SHARED worktree.
+
+**IMPORTANT:** You are in a worktree at $ticket_worktree that the user is also using, on the branch they already have checked out. DO NOT cd elsewhere. All commands run in the current directory (pwd).
+
+${item_url:+**Work item:** $item_url}
+
+**Context:**
+- A branch and open PR already exist for this work; commits you push to the current branch update that PR.
+- The user may have uncommitted changes here. Include any that clearly belong with this work.
+
+**CRITICAL CONSTRAINTS:**
+- Do NOT use the Agent/Task tool - work directly (the tracker MCP tools mcp__tracker__* are available here).
+- Do NOT cd elsewhere, create a branch, or checkout another branch - stay on the current branch.
+
+**Tasks:**
+1. Read the work item with \`mcp__tracker__get_item\` (itemId: $ticket_id) and continue it from where it stands.
+2. Implement the remaining requirements.
+3. $TEST_INSTRUCTIONS
+4. Commit your changes with a descriptive message and push to the current branch (this updates the PR).
+
+You may receive follow-up messages while you work (via the dashboard) — treat each as
+additional instructions in this same session and keep going.
+
+**Default to working autonomously** and make reasonable, reversible decisions yourself. Only
+call \`mcp__deputy__ask_user\` when you genuinely cannot proceed (a required product or design
+decision, a hard-to-reverse choice, or missing access or information): ask one specific
+question and STOP, do not guess, and you will be resumed with the answer.
+
+Work autonomously. When done, report what you did."
+  else
+  prompt="Implement work item $ticket_id
 
 **IMPORTANT:** You are in an isolated git worktree at $ticket_worktree on a detached HEAD. DO NOT cd elsewhere. All commands run in the current directory (pwd).
 
@@ -452,6 +509,7 @@ decision, a hard-to-reverse choice, or missing access or information): ask one s
 question and STOP, do not guess or open a PR, and you will be resumed with the answer.
 
 Work autonomously. When done, report the PR URL."
+  fi
 
   local timeout_mins=$((CLAUDE_TIMEOUT_SECONDS / 60))
   echo "[$(date)] Starting agent (max ${timeout_mins} min, live chat via dashboard)..." >> "$log_file"
@@ -474,9 +532,13 @@ Work autonomously. When done, report the PR URL."
     echo "[$(date)] SUCCESS: $ticket_id" >> "$DAEMON_LOG_FILE"
   fi
 
-  echo "[$(date)] Cleaning up worktree for $ticket_id..." >> "$log_file"
-  cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
-  git worktree prune 2>/dev/null || true
+  if [ "$collaborating" -eq 1 ]; then
+    echo "[$(date)] Leaving your shared worktree in place." >> "$log_file"
+  else
+    echo "[$(date)] Cleaning up worktree for $ticket_id..." >> "$log_file"
+    cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$ticket_worktree" 2>/dev/null || rm -rf "$ticket_worktree"
+    git worktree prune 2>/dev/null || true
+  fi
   rm -f "$lock_file"
 }
 

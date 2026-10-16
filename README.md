@@ -40,10 +40,15 @@ you're working on.
   so long waits and reboots are fine). Not every ticket is one-shot, and that's OK.
 - **Chat with any deputy live** — open a case and talk to the agent mid-run; it keeps
   full context (💬 case log). Or `deputy continue <TICKET> "…"`. No PR/Jira comments.
+- **Picks up work you started** — if you already have the ticket's branch open in a
+  worktree, the deputy finds it (via the ticket's PR) and works in *your* worktree on
+  *your* branch, pushing to the same PR, instead of starting its own. Hit "call off"
+  to take the keys back. No branch-naming convention needed.
 - **Pluggable trackers** — Jira and GitHub Issues built in; add another in ~80 lines.
 - **Not locked to Claude** — the agent is a swappable command (`DEPUTY_AGENT_CMD`).
-- **Isolated by construction** — one git worktree per item, off `origin/main`,
-  on a detached HEAD, with its own deps installed. Your working tree is never touched.
+- **Isolated by default** — a fresh git worktree per item, off `origin/main` on a
+  detached HEAD with its own deps, so your tree is untouched (unless you're
+  collaborating on a branch you already have open, see above).
 - **Concurrent** — processes multiple items at once, each fully sandboxed.
 - **Live dashboard** — deputies on patrol, their open cases nested beneath with
   streaming logs + live chat, recent cases, and one-click deputize / stand down.

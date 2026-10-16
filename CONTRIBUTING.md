@@ -60,6 +60,17 @@ On the dashboard, `/api/say` is the single entry point: if the agent is live it
 streams the message into the session; if the case is parked it queues a `resume`
 request instead (daemon drains it on the `SIGUSR1` nudge).
 
+## Collaborating in your worktree
+
+Before making its own throwaway worktree, `process_ticket` calls
+`detect_user_worktree`, which walks ticket -> open PR -> head branch ->
+checked-out worktree (`gh pr list` + `git worktree list`). If you already have that
+branch open somewhere, the deputy works in *that* directory on *that* branch and
+pushes to the same PR, and it does not delete the worktree afterward. The PR is the
+only link, so it needs no branch-naming convention; before a PR exists there's
+nothing to join on, so it starts fresh. The runner finds the Agent SDK via
+`DEPUTY_SDK_DIR` when your worktree wasn't set up by the daemon.
+
 ## State
 
 All runtime state lives in `/tmp`:
