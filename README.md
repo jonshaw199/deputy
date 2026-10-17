@@ -253,13 +253,6 @@ a GitHub token. Notable knobs:
 - `DEPUTY_AGENT_CMD` — the agent command; defaults to the bundled Claude runner, swap for any other
 - `DEPUTY_PR_LABEL` — label put on deputy PRs (also how CI auto-fix finds them)
 
-## On your phone, too
-
-The dashboard is responsive, so you can check on your deputies (and answer a "needs your
-call") from a phone browser.
-
-<img src="docs/dashboard-mobile.png" width="320" alt="Deputy on mobile" />
-
 ## Try it with mock data
 
 Want to see the whole board without wiring up a tracker? Seed a fake one:
