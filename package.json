@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Local daemon that watches a tracker (Jira / GitHub Issues) for AI-ready work items and resolves each with the Claude Agent SDK, with a web dashboard.",
+  "license": "MIT",
+  "author": "Jon Shaw",
+  "repository": { "type": "git", "url": "https://github.com/jonshaw199/deputy.git" },
   "bin": {
     "deputy": "bin/daemon"
   },
