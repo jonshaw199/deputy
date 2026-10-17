@@ -4,7 +4,7 @@
 // hit the exact same endpoints. It reads daemon state from /tmp (read-only) and
 // shells out to bin/daemon for start/stop.
 import { createServer } from 'node:http';
-import { readFileSync, readdirSync, existsSync, appendFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, appendFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
@@ -67,6 +67,21 @@ export function makeServer(opts = {}) {
 
   const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const tail = (path, n = 4000) => { try { const t = readFileSync(path, 'utf8'); return t.length > n ? t.slice(-n) : t; } catch { return ''; } };
+
+  // A case's full activity: the base run + every continuation (CI fix, resume, follow-up)
+  // joined oldest-first, so one scroll reads the whole story. Files stay separate on disk.
+  function caseLogText(ticket, n = 20000) {
+    const esc = ticket.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`^deputy-item-(${esc}(?:-cont-.+)?)\\.log$`);
+    const files = readdirSync(TMP)
+      .map((f) => f.match(re)).filter(Boolean)
+      .map((m) => join(TMP, `deputy-item-${m[1]}.log`))
+      .map((p) => { let t = 0; try { t = statSync(p).mtimeMs; } catch {} return [p, t]; })
+      .sort((a, b) => a[1] - b[1]);
+    if (!files.length) return '';
+    const joined = files.map(([p]) => tail(p, n)).join('\n\n────────── continued ──────────\n\n');
+    return joined.length > n ? joined.slice(-n) : joined;
+  }
 
   function listDaemons() {
     return readdirSync(TMP)
@@ -220,9 +235,9 @@ export function makeServer(opts = {}) {
     if (path === '/api/log') {
       const ticket = url.searchParams.get('ticket');
       const project = url.searchParams.get('daemon');
-      const file = ticket ? `deputy-item-${ticket}.log` : project ? `deputy-${project}.log` : null;
-      if (!file) return json(res, 400, { error: 'ticket or daemon required' });
-      return json(res, 200, { text: tail(join(TMP, file), 20000) });
+      if (ticket) return json(res, 200, { text: caseLogText(ticket, 20000) || '(empty)' });
+      if (project) return json(res, 200, { text: tail(join(TMP, `deputy-${project}.log`), 20000) });
+      return json(res, 400, { error: 'ticket or daemon required' });
     }
     if (path === '/api/stop' && req.method === 'POST') {
       const { project } = await readBody(req);

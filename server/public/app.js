@@ -4,8 +4,8 @@ const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt
 const trunc = (s, n) => { s = String(s || ''); return s.length <= n ? esc(s) : esc(s.slice(0, n).replace(/\s+\S*$/, '')) + '…'; };
 let siteUrl = '';
 const linkTickets = (s) => esc(String(s || '')).replace(/\b([A-Z][A-Z0-9]+-\d+)\b/g, (k) => siteUrl ? `<a href="${siteUrl}/browse/${k}" target="_blank">${k}</a>` : k);
-// Sharp pistol silhouette (emoji 🔫 renders as a toy water gun on macOS).
-const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="3" y="7" width="18" height="3.2" rx=".6"/><path d="M7 10l-1.6 6a1 1 0 0 0 1 1.3h2.4a1 1 0 0 0 1-.7L11.6 10z"/><rect x="18.4" y="5.7" width="2.6" height="2" rx=".4"/></svg>';
+// Revolver silhouette (cylinder + barrel + grip); emoji 🔫 renders as a toy water gun on macOS.
+const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="9" y="6.4" width="12" height="2.6" rx=".5"/><circle cx="8" cy="9.6" r="3.3"/><path d="M7 12.4l-1.5 5.1a1 1 0 0 0 1 1.3h2a1 1 0 0 0 1-.75L11 12.4z"/><rect x="18.6" y="5" width="2.4" height="2" rx=".3"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 const PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 5l12 7-12 7z"/></svg>';
 
@@ -26,8 +26,12 @@ function badge(outcome) {
 // colour (blue = working, amber = needs you, green = in review) and the content.
 // Clicking opens the live chat for a live agent, or the PR's review comments in-review.
 function openCaseModal(c) {
-  if (c.state === 'in-review') openLog({ pr: { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] }, project: c.project }, `${c.ticket} · review`);
-  else openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input', blocked: c.state === 'blocked', failed: c.state === 'failed', stopped: c.state === 'stopped' }, `${c.ticket} · case log`);
+  openLog({
+    ticket: c.ticket, state: c.state, project: c.project, item: c.item, phase: c.phase, question: c.question,
+    live: c.state === 'working' || c.state === 'needs-input',
+    needsInput: c.state === 'needs-input', blocked: c.state === 'blocked', failed: c.state === 'failed', stopped: c.state === 'stopped',
+    pr: c.pr ? { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] } : null,
+  }, c.ticket);
 }
 
 function caseRow(c) {
@@ -198,25 +202,56 @@ async function openLog(target, title) {
   logTarget = target;
   pendingEcho = ''; pendingResume = false;
   $('#logTitle').textContent = title;
-  const canReply = !!((target.ticket && !target.blocked && !target.failed && !target.stopped) || target.pr);
+  // Left pane (Activity log) is always shown. Reply box: chat a live agent, or do-more / address
+  // comments on an in-review PR. Blocked/failed/stopped have no one to talk to (details on the right).
+  const live = !!target.live;
+  const canReply = live || !!target.pr;
   $('#logReply').classList.toggle('hidden', !canReply);
-  if (target.ticket) $('#replyInput').placeholder = target.needsInput ? 'Answer the deputy…' : 'Reply to this agent…';
-  if (target.pr) $('#replyInput').placeholder = (target.pr.comments || []).length ? 'Extra guidance (optional)…' : 'Tell Deputy what to do…';
+  if (canReply) $('#replyInput').placeholder = live
+    ? (target.needsInput ? 'Answer the deputy…' : 'Reply to this agent…')
+    : ((target.pr?.comments || []).length ? 'Extra guidance (or “address all” →)' : 'Tell Deputy to do more on this PR…');
   $('#letDecide').classList.toggle('hidden', !target.needsInput);
   $('#addressAll').classList.toggle('hidden', !(target.pr && (target.pr.comments || []).length));
+  renderDetails(target);
+  $('#logBody').textContent = '';
   $('#logModal').classList.remove('hidden');
   clearInterval(logTimer);
-  if (target.pr) { renderPrComments(target.pr); }
-  else { refreshLog(); logTimer = setInterval(refreshLog, 1000); }
+  refreshLog(); logTimer = setInterval(refreshLog, 1000);
   if (canReply) $('#replyInput').focus();
 }
-function renderPrComments(p) {
-  const cs = p.comments || [];
-  const head = cs.length
-    ? `${cs.length} unresolved review comment${cs.length > 1 ? 's' : ''}. Tell Deputy what to fix below; it edits the code and pushes, and never replies on the PR (that's you).\n\n`
-    : `No unresolved review comments. You can still tell Deputy to do more work on this PR below.\n\n`;
-  const list = cs.map((c) => `@${c.author}  ${c.path}${c.line ? ':' + c.line : ''}\n${c.body}\n${c.url}`).join('\n\n──────────\n\n');
-  $('#logBody').textContent = head + list;
+
+// Right pane: the contextual sections that apply to this case (status, failure, blocked,
+// needs-input, review comments, links). A daemon/patrol-log target has no case → pane hidden.
+function renderDetails(target) {
+  const d = $('#logDetails');
+  if (!target.ticket) { d.classList.add('hidden'); d.innerHTML = ''; return; }
+  const label = { working: 'working', 'needs-input': 'needs your call', blocked: 'blocked', failed: 'failed', stopped: 'stopped', 'in-review': 'in review' }[target.state] || target.state || '';
+  // One "Case" overview: status + ticket/PR/branch together.
+  const meta = [`<div class="meta-row"><span>status</span><span class="statepill">${esc(label)}</span></div>`];
+  if (target.ticket) meta.push(`<div class="meta-row"><span>ticket</span>${target.item ? `<a href="${target.item}" target="_blank">${esc(target.ticket)}</a>` : esc(target.ticket)}</div>`);
+  if (target.pr) {
+    meta.push(`<div class="meta-row"><span>PR</span><a href="${target.pr.url}" target="_blank">#${target.pr.number}</a></div>`);
+    if (target.pr.branch) {
+      const repoBase = target.pr.url.replace(/\/pull\/\d+.*$/, '');
+      meta.push(`<div class="meta-row"><span>branch</span><a href="${repoBase}/tree/${encodeURIComponent(target.pr.branch)}" target="_blank">${esc(target.pr.branch)}</a></div>`);
+    }
+  }
+  const s = [`<div class="detail"><h4>Case</h4>${meta.join('')}</div>`];
+  if (target.needsInput) s.push(`<div class="detail"><h4>Needs your call</h4><div>${esc(target.question || target.phase || '')}</div></div>`);
+  if (target.blocked) s.push(`<div class="detail"><h4>Blocked</h4><div>${linkTickets(target.phase)}</div><div class="muted">Starts once its dependency has a branch.</div></div>`);
+  if (target.failed) s.push(`<div class="detail"><h4>Failure</h4><div class="err">${esc(target.phase || 'the run failed')}</div><button class="ghost" data-retry style="margin-top:10px">▶ re-run</button></div>`);
+  if (target.stopped) s.push(`<div class="detail"><h4>Stopped</h4><div class="muted">Kept so you can bring it back.</div><button class="ghost" data-retry style="margin-top:10px">▶ re-run</button></div>`);
+  if (target.pr) {
+    const cs = target.pr.comments || [];
+    const body = cs.length
+      ? cs.map((c) => `<div class="cmt"><div class="who">@${esc(c.author)} <span class="loc">${esc(c.path)}${c.line ? ':' + c.line : ''}</span></div><div>${esc(c.body)}</div><a href="${c.url}" target="_blank">view</a></div>`).join('')
+      : `<div class="muted">No unresolved review comments.</div>`;
+    s.push(`<div class="detail"><h4>Review comments${cs.length ? ` (${cs.length})` : ''}</h4>${body}${cs.length ? `<div class="muted" style="margin-top:6px">Tell Deputy what to fix on the left — it edits + pushes, never replies on the PR.</div>` : ''}</div>`);
+  }
+  d.innerHTML = s.join('');
+  d.classList.remove('hidden');
+  const rb = d.querySelector('[data-retry]');
+  if (rb) rb.onclick = async () => { await api('/api/rerun', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: target.ticket, project: target.project }) }); $('#logClose').click(); refresh(); };
 }
 // Build the instruction for a PR follow-up, auto-attaching the unresolved comments so
 // the agent actually sees them (you don't retype). `extra` is your optional guidance.
@@ -235,8 +270,8 @@ $('#logReply').onsubmit = async (e) => {
   const btn = e.target.querySelector('button[type=submit]');
   const message = inp.value.trim();
 
-  // A PR entry: typed = do exactly that; empty = "address all" the comments (with a confirm).
-  if (logTarget?.pr) {
+  // In-review PR (not a live agent): typed = do exactly that; empty = "address all" (with a confirm).
+  if (!logTarget?.live && logTarget?.pr) {
     const p = logTarget.pr;
     let prompt = message;
     if (!message) {
@@ -250,7 +285,7 @@ $('#logReply').onsubmit = async (e) => {
     const r = await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: logTarget.project, ticket: p.ticket || `PR-${p.number}`, branch: p.branch, prompt }) });
     btn.disabled = false; btn.textContent = label;
     if (r.error) { inp.value = message; alert(r.error); }
-    else { $('#logBody').textContent += `\n\n[SENT] Deputy is on it; it'll appear as a working case.`; $('#logBody').scrollTop = $('#logBody').scrollHeight; }
+    else { pendingEcho = `[SENT] Deputy is on it — it'll show as a working case here.`; refreshLog(); }
     return;
   }
 
@@ -279,8 +314,9 @@ $('#letDecide').onclick = async () => {
   if (r.error) alert(r.error); else { pendingResume = true; $('#logBody').textContent += '\n[YOU] (let it decide)\n'; refreshLog(); }
 };
 async function refreshLog() {
-  if (!logTarget || logTarget.pr) return;
-  const q = logTarget.ticket ? `ticket=${encodeURIComponent(logTarget.ticket)}` : `daemon=${encodeURIComponent(logTarget.daemon)}`;
+  if (!logTarget) return;
+  const q = logTarget.ticket ? `ticket=${encodeURIComponent(logTarget.ticket)}` : logTarget.daemon ? `daemon=${encodeURIComponent(logTarget.daemon)}` : null;
+  if (!q) return;
   const { text } = await api(`/api/log?${q}`);
   const body = $('#logBody');
   const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;

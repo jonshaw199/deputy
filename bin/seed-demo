@@ -45,6 +45,11 @@ item() { # item <ticket> <project> <transcript>
   printf '%s\n' "$3" > "$DIR/deputy-item-$1.log"
 }
 itemlog_only() { printf 'ITEM_URL: %s/browse/%s\n' "$SITE" "$1" > "$DIR/deputy-item-$1.log"; }
+# review_log <ticket> <repo> <pr#> <summary line> — a short finished-work transcript so the
+# Activity pane isn't empty for an in-review case.
+review_log() {
+  printf 'ITEM_URL: %s/browse/%s\n\n[ASSISTANT] %s\n\n━━━ [Bash] ━━━\n(run tests)\n↳ passing\n\n━━━ [Bash] ━━━\ngh pr create --draft\n↳ https://github.com/acme/%s/pull/%s\n\n[ASSISTANT] Draft PR is up for review.\n' "$SITE" "$1" "$4" "$2" "$3" > "$DIR/deputy-item-$1.log"
+}
 
 WEBAPP_PID=$(alive_pid); API_PID=$(alive_pid)
 echo "$WEBAPP_PID $API_PID" > "$DIR/.demo-pids"
@@ -105,6 +110,8 @@ cat > "$DIR/deputy-prs-webapp.json" <<JSON
   {"number":806,"title":"fix: pagination off-by-one on the orders list [WEB-298]","url":"https://github.com/acme/webapp/pull/806","branch":"you/web-298","ticket":"WEB-298","item":"$SITE/browse/WEB-298","comments":[]}
 ]
 JSON
+review_log WEB-301 webapp 812 "Redesigned the account page: split profile and billing into cards, added optimistic save, and debounced the form. Updated the component tests."
+review_log WEB-298 webapp 806 "Fixed the pagination off-by-one on the orders list and added a regression test for the last-page boundary."
 
 # ============================ DEPUTY: api (on patrol) ============================
 deputy api "/Users/you/code/api" "$API_PID" "[Mon Oct 12 08:30:00 2026] SUCCESS: API-31
@@ -119,21 +126,44 @@ ITEM_URL: $SITE/browse/API-45
 bundle exec rspec spec/requests/orders_spec.rb
 ↳ 14 examples, 0 failures"
 
+# needs-your-call
+wl "deputy-ask-API-52.txt" "The webhook retry policy isn't specified. Exponential backoff capped at 1h, or a fixed 5-minute interval with a max of 10 tries?"
+wl "deputy-paused-API-52.meta" "api"
+printf '%s\n' "ITEM_URL: $SITE/browse/API-52
+[ASSISTANT] Webhooks are wired up; I need a product call on the retry policy before finishing." > "$DIR/deputy-item-API-52.log"
+
+# stopped
+wl "deputy-stopped-API-39.meta" "api"
+itemlog_only API-39
+
 cat > "$DIR/deputy-prs-api.json" <<JSON
 [
   {"number":220,"title":"feat: idempotency keys for payments [API-40]","url":"https://github.com/acme/api/pull/220","branch":"you/api-40","ticket":"API-40","item":"$SITE/browse/API-40","comments":[
     {"author":"ravi","path":"app/services/payments.rb","line":57,"body":"Return 409 on a key collision, not 422.","url":"https://github.com/acme/api/pull/220#discussion_r9"}
-  ]}
+  ]},
+  {"number":214,"title":"feat: rate-limit the public search endpoint [API-33]","url":"https://github.com/acme/api/pull/214","branch":"you/api-33","ticket":"API-33","item":"$SITE/browse/API-33","comments":[]}
 ]
 JSON
+review_log API-40 api 220 "Added idempotency keys to the payments endpoint, keyed on the client token with a 24h store. Specs cover replays and key collisions."
+review_log API-33 api 214 "Rate-limited the public search endpoint (per-IP token bucket) and return 429 with Retry-After."
 
 # ============================ DEPUTY: mobile (off duty) ============================
 deputy mobile "/Users/you/code/mobile" "$DEAD_PID" "[Sun Oct 11 17:40:00 2026] SUCCESS: MOB-80"
+# failed (kept; off-duty deputy still shows it)
+wl "deputy-failed-MOB-84.meta" "mobile"
+printf '%s\n' "finished without opening a PR (the push or PR step failed)
+fatal: unable to access 'https://github.com/acme/mobile.git/': Could not resolve host" > "$DIR/deputy-failed-MOB-84.txt"
+itemlog_only MOB-84
 cat > "$DIR/deputy-prs-mobile.json" <<JSON
 [
-  {"number":77,"title":"feat: offline cache for the feed [MOB-88]","url":"https://github.com/acme/mobile/pull/77","branch":"you/mob-88","ticket":"MOB-88","item":"$SITE/browse/MOB-88","comments":[]}
+  {"number":77,"title":"feat: offline cache for the feed [MOB-88]","url":"https://github.com/acme/mobile/pull/77","branch":"you/mob-88","ticket":"MOB-88","item":"$SITE/browse/MOB-88","comments":[]},
+  {"number":73,"title":"fix: crash on cold launch when logged out [MOB-79]","url":"https://github.com/acme/mobile/pull/73","branch":"you/mob-79","ticket":"MOB-79","item":"$SITE/browse/MOB-79","comments":[
+    {"author":"sam","path":"app/src/Boot.kt","line":28,"body":"Guard the null session before reading the token.","url":"https://github.com/acme/mobile/pull/73#discussion_r4"}
+  ]}
 ]
 JSON
+review_log MOB-88 mobile 77 "Added an offline cache for the feed backed by the local store; falls back to cache on a network error."
+review_log MOB-79 mobile 73 "Fixed the cold-launch crash when logged out by guarding the null session before reading the token."
 
 echo "Seeded demo state in $DIR"
 echo "Deputies: webapp (on patrol), api (on patrol), mobile (off duty)"

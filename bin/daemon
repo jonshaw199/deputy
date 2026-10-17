@@ -221,6 +221,7 @@ function run_agent() {
   local worktree=$1 agent_prompt=$2 lf=$3 input_file=$4 ask_file=$5 session_file=$6 resume_id=$7
   [ -n "$PRE_AGENT" ] && eval "$PRE_AGENT" >> "$lf" 2>&1
   ( cd "$worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$agent_prompt" \
+      ${DEPUTY_GITHUB_TOKEN:+GITHUB_TOKEN="$DEPUTY_GITHUB_TOKEN"} \
       ${input_file:+DEPUTY_INPUT="$input_file"} \
       ${ask_file:+DEPUTY_ASK_FILE="$ask_file"} \
       ${session_file:+DEPUTY_SESSION_FILE="$session_file"} \
@@ -337,8 +338,9 @@ function check_for_ci_failures() {
     checks=$(cd "$MAIN_PROJECT_DIR" && gh pr checks "$pr_number" --json name,state,link 2>/dev/null)
     [ -z "$checks" ] && continue
     local pending; pending=$(echo "$checks" | jq '[.[]|select(.state=="PENDING" or .state=="IN_PROGRESS")]|length' 2>/dev/null || echo 0)
-    [ "$pending" -gt 0 ] && continue
     local failed; failed=$(echo "$checks" | jq '[.[]|select(.state=="FAIL" or .state=="FAILURE")]|length' 2>/dev/null || echo 0)
+    { [ "$pending" -gt 0 ] || [ "$failed" -gt 0 ]; } && echo "[$(date)] CI check PR #$pr_number (${branch_name}): pending=$pending failed=$failed" >> "$DAEMON_LOG_FILE"
+    [ "$pending" -gt 0 ] && continue
     [ "$failed" -eq 0 ] && continue
 
     echo "$key" >> "$PROCESSED_FILE"

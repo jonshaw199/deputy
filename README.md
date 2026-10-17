@@ -178,6 +178,11 @@ box, or let it decide:
 
 ![A case that needs your call](docs/needs-input.png)
 
+A run that can't finish (e.g. a push that failed) is **kept and surfaced**, never lost — with
+its error and a ▶ to retry:
+
+![A failed case, kept and retryable](docs/failed.png)
+
 - **When a deputy needs your call:** if it hits something it shouldn't decide alone,
   it parks the case and surfaces its question (flagged "needs your call" on the
   dashboard). Open the case, answer in the same box, and it resumes right where it

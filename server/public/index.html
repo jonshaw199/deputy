@@ -10,8 +10,11 @@
 <body>
   <header>
     <div class="brand">
-      <h1><img src="/icon.svg" class="logo" alt="" /> Deputy</h1>
-      <div class="tag">keeping the peace in your backlog</div>
+      <img src="/icon.svg" class="logo" alt="" />
+      <div>
+        <h1>Deputy</h1>
+        <div class="tag">keeping the peace in your backlog</div>
+      </div>
     </div>
     <div class="muted"><span id="globalDot" class="dot"></span> <span id="updated">loading…</span></div>
   </header>
@@ -35,13 +38,19 @@
         <span id="logTitle"></span>
         <button id="logClose">✕</button>
       </div>
-      <pre id="logBody"></pre>
-      <form id="logReply" class="reply hidden">
-        <input id="replyInput" placeholder="reply to this agent…" autocomplete="off" />
-        <button type="button" id="letDecide" class="ghost hidden" title="Resume and let the deputy decide for itself">let it decide</button>
-        <button type="button" id="addressAll" class="ghost hidden" title="Fix every unresolved review comment on this PR">address all</button>
-        <button type="submit">Send</button>
-      </form>
+      <div class="modal-panes">
+        <div class="pane pane-left">
+          <div class="pane-label">Activity</div>
+          <pre id="logBody"></pre>
+          <form id="logReply" class="reply hidden">
+            <input id="replyInput" placeholder="reply to this agent…" autocomplete="off" />
+            <button type="button" id="letDecide" class="ghost hidden" title="Resume and let the deputy decide for itself">let it decide</button>
+            <button type="button" id="addressAll" class="ghost hidden" title="Fix every unresolved review comment on this PR">address all</button>
+            <button type="submit">Send</button>
+          </form>
+        </div>
+        <aside id="logDetails" class="pane pane-right hidden"></aside>
+      </div>
     </div>
   </div>
 

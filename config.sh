@@ -16,6 +16,7 @@ fi
 CHECK_INTERVAL="${DEPUTY_CHECK_INTERVAL:-300}"
 TEST_INSTRUCTIONS="${DEPUTY_TEST_INSTRUCTIONS:-Run the automated tests relevant to your change (see README/CONTRIBUTING). Fix failures you introduced; ignore unrelated pre-existing ones.}"
 
-# The Agent SDK reads ANTHROPIC_API_KEY; the agent's gh CLI reads GITHUB_TOKEN.
+# The Agent SDK reads ANTHROPIC_API_KEY. GITHUB_TOKEN is NOT exported globally on purpose:
+# it would override the daemon's own `gh` keychain auth (breaking `gh pr list` etc.); it's
+# passed only to the agent in run_agent, where the sandbox has no keychain access.
 export ANTHROPIC_API_KEY="${DEPUTY_CLAUDE_API_KEY}"
-export GITHUB_TOKEN="${DEPUTY_GITHUB_TOKEN}"
