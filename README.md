@@ -2,6 +2,9 @@
 
 # Deputy
 
+[![tests](https://github.com/jonshaw199/deputy/actions/workflows/test.yml/badge.svg)](https://github.com/jonshaw199/deputy/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Point it at your backlog. It ships PRs while you sleep.**
 
 A local daemon that watches a tracker (Jira or GitHub Issues) for ready,
