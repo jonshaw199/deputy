@@ -108,17 +108,22 @@ npm run doctor       # verify prerequisites (node/git/gh/jq) + credentials
 
 Prefer to do it by hand? `cp .env.example .env` and fill it in — it's self-documenting.
 
-Run it **from the repo you want it to work on**:
-
-```bash
-cd ~/code/my-app
-/path/to/deputy/bin/daemon start      # also: stop | status
-```
-
 Launch the dashboard:
 
 ```bash
 npm run dashboard        # http://localhost:4319
+```
+
+Then **deputize a repo** — a "deputy" is just the daemon running in one repo (one per repo).
+Two equivalent ways to post one:
+
+- **From the dashboard** — add repo paths to `DEPUTY_REPOS` in `.env`, then click **Deputize**
+  next to the repo. This just runs the command below for you.
+- **From the CLI** — `cd` into any repo and start it directly:
+
+```bash
+cd ~/code/my-app
+/path/to/deputy/bin/daemon start      # also: stop | status | restart
 ```
 
 Other commands:
