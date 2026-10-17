@@ -1,7 +1,7 @@
 :root {
   --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
   --text: #e6e9ef; --muted: #8b93a3; --accent: #5b9dff;
-  --ok: #3fb950; --fail: #f85149; --warn: #d29922; --busy: #5b9dff;
+  --ok: #5b9dff; --fail: #f85149; --warn: #d29922; --busy: #3fb950;
 }
 * { box-sizing: border-box; }
 body {
@@ -24,7 +24,8 @@ section { margin-bottom: 32px; }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
-.card .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.card .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.deputy-actions { display: flex; gap: 14px; align-items: center; }
 .card h3 { margin: 0; font-size: 15px; }
 .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-all; }
 
@@ -35,21 +36,20 @@ section { margin-bottom: 32px; }
 .dot.wait { background: #6e7787; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
-.recent { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.deputy-head { cursor: pointer; margin: -14px -16px 0; padding: 14px 16px 12px; border-radius: 10px 10px 0 0; }
+.deputy-head:hover { background: rgba(255,255,255,.03); }
+.deputy-head h3 { transition: color .1s; }
+.deputy-head:hover h3 { color: var(--accent); }
+.recent { margin-top: 0; border-top: 1px solid var(--border); padding-top: 12px; }
 .recent .item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
 .case { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .case:last-child { border-bottom: none; }
 .case:hover { background: rgba(255,255,255,.025); }
-/* Parked case: amber highlight on the question line only, so the header stays aligned. */
 .case .question { color: var(--text); margin-top: 5px; padding: 6px 10px; border-left: 3px solid var(--warn); background: rgba(210,153,34,.08); border-radius: 6px; word-break: normal; overflow-wrap: break-word; }
 .case .question b { color: var(--warn); }
-/* Case preview text is prose: break on words, not mid-word (the repo path above
-   keeps .card .sub's break-all). */
 .case .sub { word-break: normal; overflow-wrap: break-word; }
-/* Blocked case: muted, non-pulsing — it's waiting, not working. */
 .case .blocked-note { color: var(--muted); margin-top: 5px; }
 .case .blocked-note b { color: #aab2c0; }
-/* Failed case: red-tinted so it can't be missed. */
 .case .failed-note { color: var(--text); margin-top: 5px; padding: 6px 10px; border-left: 3px solid var(--fail); background: rgba(248,81,73,.08); border-radius: 6px; }
 .case .failed-note b { color: var(--fail); }
 .case-head { display: flex; align-items: center; gap: 8px; }

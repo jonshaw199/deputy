@@ -622,6 +622,14 @@ function recover_pr() {
   return 0
 }
 
+# Prints the head branch of this ticket's open PR (any name), or empty. Name-agnostic, so it
+# finds a manually-created branch Claude took over, not just Deputy's own naming.
+function ticket_pr_branch() {
+  local ticket_id=$1
+  command -v gh >/dev/null 2>&1 || return 0
+  cd "$MAIN_PROJECT_DIR" && gh pr list --state open --search "$ticket_id" --json headRefName --jq '.[0].headRefName // empty' 2>/dev/null
+}
+
 function process_ticket() {
   local ticket_id=$1
   local log_file="/tmp/deputy-item-${ticket_id}.log"
@@ -677,8 +685,10 @@ function process_ticket() {
     rm -f "$lock_file"; return 1
   fi
 
+  local branch_name; branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]')
+
   # If you already have this ticket's branch open in a worktree, work there with you.
-  local collaborating=0
+  local collaborating=0 resuming_branch=0
   local user_wt; user_wt=$(detect_user_worktree "$ticket_id")
   if [ -n "$user_wt" ] && [ -d "$user_wt" ]; then
     collaborating=1
@@ -686,27 +696,48 @@ function process_ticket() {
     export DEPUTY_SDK_DIR="$AUTOMATION_BASE_DIR/node_modules"
     echo "[$(date)] Collaborating in your worktree: $user_wt" >> "$log_file"
   else
-    # Stacked tickets branch off their blocker's branch; everything else off origin/main.
-    local base_commit="origin/main"
-    if [ -n "$stack_branch" ]; then
-      base_commit="origin/$stack_branch"
-      git fetch origin "$stack_branch" >> "$log_file" 2>&1 || true
-      echo "[$(date)] Stacking $ticket_id on $stack_branch" >> "$log_file"
+    # Reuse existing work instead of restarting: find this ticket's branch PR-first (any name,
+    # via its open PR), then fall back to the deterministic name for a branch with no PR yet.
+    local existing_branch; existing_branch=$(ticket_pr_branch "$ticket_id")
+    if [ -z "$existing_branch" ]; then
+      git fetch origin "$branch_name" >> "$log_file" 2>&1 || true
+      if git show-ref --verify --quiet "refs/remotes/origin/$branch_name" || git show-ref --verify --quiet "refs/heads/$branch_name"; then
+        existing_branch="$branch_name"
+      fi
     fi
-    echo "[$(date)] Creating worktree for $ticket_id (base: $base_commit)..." >> "$log_file"
+
     if [ -d "$ticket_worktree" ]; then
       git worktree remove --force "$ticket_worktree" 2>/dev/null || true
       rm -rf "$ticket_worktree" 2>/dev/null || true
     fi
     git worktree prune 2>/dev/null || true
-    if ! git worktree add --detach "$ticket_worktree" "$base_commit" >> "$log_file" 2>&1; then
-      echo "[$(date)] FAILED: $ticket_id (worktree creation failed)" >> "$DAEMON_LOG_FILE"
-      rm -f "$lock_file"; return 1
+
+    if [ -n "$existing_branch" ]; then
+      # Continue the prior attempt: check out its branch (reuse its commits), don't redo.
+      resuming_branch=1; branch_name="$existing_branch"
+      git fetch origin "$branch_name" >> "$log_file" 2>&1 || true
+      echo "[$(date)] Reusing branch $branch_name for $ticket_id (continuing, not restarting)" >> "$log_file"
+      if ! git worktree add "$ticket_worktree" "$branch_name" >> "$log_file" 2>&1; then
+        echo "[$(date)] FAILED: $ticket_id (checkout of existing $branch_name failed)" >> "$DAEMON_LOG_FILE"
+        rm -f "$lock_file"; return 1
+      fi
+    else
+      # Fresh: stacked tickets branch off their blocker's branch; everything else off origin/main.
+      local base_commit="origin/main"
+      if [ -n "$stack_branch" ]; then
+        base_commit="origin/$stack_branch"
+        git fetch origin "$stack_branch" >> "$log_file" 2>&1 || true
+        echo "[$(date)] Stacking $ticket_id on $stack_branch" >> "$log_file"
+      fi
+      echo "[$(date)] Creating worktree for $ticket_id (base: $base_commit)..." >> "$log_file"
+      if ! git worktree add --detach "$ticket_worktree" "$base_commit" >> "$log_file" 2>&1; then
+        echo "[$(date)] FAILED: $ticket_id (worktree creation failed)" >> "$DAEMON_LOG_FILE"
+        rm -f "$lock_file"; return 1
+      fi
     fi
     setup_worktree "$ticket_worktree" "$log_file"
   fi
 
-  local branch_name; branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]')
   local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
   local pr_ref;   pr_ref=$(node "$TRACKER_CLI" ref "$ticket_id" 2>/dev/null)
   [ -n "$item_url" ] && echo "[$(date)] ITEM_URL: $item_url" >> "$log_file"
@@ -750,6 +781,28 @@ decision, a hard-to-reverse choice, or missing access or information): ask one s
 question and STOP, do not guess, and you will be resumed with the answer.
 
 Work autonomously. When done, report what you did."
+  elif [ "$resuming_branch" -eq 1 ]; then
+  prompt="Finish work item $ticket_id — a PRIOR attempt already did work on this branch.
+
+**IMPORTANT:** You are in an isolated worktree at $ticket_worktree, already checked out on branch \`$branch_name\`, which holds commits from the earlier attempt. DO NOT start over, DO NOT recreate the branch, DO NOT cd elsewhere.
+${stack_note}
+${item_url:+**Work item:** $item_url}
+
+**Tasks:**
+1. Read the work item with \`mcp__tracker__get_item\` (itemId: $ticket_id).
+2. See what the earlier attempt already did: \`git log --oneline origin/main..HEAD\` and \`git status\`. Build on it; do NOT redo completed work.
+3. Implement anything still missing to satisfy the item.
+4. $TEST_INSTRUCTIONS
+5. Commit any new changes and push to origin/$branch_name.
+6. If there is NOT already an open PR for this branch, create a draft PR, labelled so deputy can watch its CI:
+   - \`gh pr create --draft --label \"$PR_LABEL\"${pr_base_flag} --title \"<type>: <summary> [$ticket_id]\" ...\`${pr_ref:+
+   - Body should include: \"$pr_ref\"}
+   (If a PR already exists, your push already updated it — do NOT open a second one.)
+7. Mark the work item done with \`mcp__tracker__finish\` (itemId: $ticket_id)
+
+You may receive follow-up messages while you work (via the dashboard). Work autonomously and
+make reasonable, reversible decisions; only call \`mcp__deputy__ask_user\` if you genuinely
+cannot proceed. When done, report the PR URL."
   else
   prompt="Implement work item $ticket_id
 
@@ -812,6 +865,11 @@ Work autonomously. When done, report the PR URL."
   # NEVER call a run success, discard the worktree, and let the case vanish silently.
   local made_pr=0
   grep -qiE 'github\.com/[^ ]+/pull/[0-9]+' "$log_file" && made_pr=1
+  # A continued/resumed run may just push to an already-open PR (no new PR url in the log).
+  if [ "$made_pr" -eq 0 ] && [ "$collaborating" -eq 0 ]; then
+    local hp; hp=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$branch_name" --state open --json number --jq 'length' 2>/dev/null)
+    [ "${hp:-0}" != "0" ] && made_pr=1
+  fi
 
   # Self-correct: if the agent finished the code but never got a PR up, the daemon pushes the
   # branch + opens the PR itself (it runs outside the agent's sandbox, so the push is reliable).

@@ -1,0 +1,145 @@
+#!/bin/bash
+# Seeds a self-contained mock state dir so the dashboard shows every case state at once —
+# great for screenshots and UI work, with NO real agents, repos, or tracker needed.
+#
+#   bin/seed-demo            # write fixtures to /tmp/deputy-demo + start sleepers
+#   bin/seed-demo --stop     # kill the sleeper pids it started
+#
+# Then point the dashboard at it:
+#   DEPUTY_TMP=/tmp/deputy-demo DEPUTY_SITE_URL=https://acme.atlassian.net \
+#     DEPUTY_DASHBOARD_PORT=4320 npm run dashboard
+# (or just: npm run demo)
+#
+# Everything here is generic (acme / webapp / WEB-123) — no company data.
+
+set -euo pipefail
+DIR="${DEPUTY_DEMO_DIR:-/tmp/deputy-demo}"
+SITE="https://acme.atlassian.net"
+
+if [ "${1:-}" = "--stop" ]; then
+  [ -f "$DIR/.demo-pids" ] && { xargs kill 2>/dev/null < "$DIR/.demo-pids" || true; rm -f "$DIR/.demo-pids"; }
+  echo "Stopped demo sleepers."
+  exit 0
+fi
+
+rm -rf "$DIR"; mkdir -p "$DIR"
+w() { printf '%s' "$2" > "$DIR/$1"; }           # write file
+wl() { printf '%s\n' "$2" > "$DIR/$1"; }         # write file + newline
+
+# A long-lived process whose pid reads as "alive" so a deputy shows as on patrol.
+alive_pid() { ( exec -a deputy-demo-sleeper sleep 2000000 ) >/dev/null 2>&1 & echo $!; }
+DEAD_PID=2147483646
+: > "$DIR/.demo-pids"
+
+# --- deputy <project> <repoDir> <pid> <patrol-log-body> ---
+deputy() {
+  wl "deputy-$1.pid" "$3"
+  wl "deputy-$1.meta" "$2"
+  printf '%s\n' "$4" > "$DIR/deputy-$1.log"
+}
+# --- a live case: working (or needs-input if an ask file is added) ---
+item() { # item <ticket> <project> <transcript>
+  wl "deputy-item-$1.lock" "$DEAD_PID"   # dashboard lists the lock; aliveness not required for cases
+  wl "deputy-item-$1.meta" "$2"
+  : > "$DIR/deputy-input-$1.jsonl"
+  printf '%s\n' "$3" > "$DIR/deputy-item-$1.log"
+}
+itemlog_only() { printf 'ITEM_URL: %s/browse/%s\n' "$SITE" "$1" > "$DIR/deputy-item-$1.log"; }
+
+WEBAPP_PID=$(alive_pid); API_PID=$(alive_pid)
+echo "$WEBAPP_PID $API_PID" > "$DIR/.demo-pids"
+
+# ============================ DEPUTY: webapp (on patrol) ============================
+deputy webapp "/Users/you/code/webapp" "$WEBAPP_PID" "[Mon Oct 12 09:02:11 2026] SUCCESS: WEB-204
+[Mon Oct 12 10:18:40 2026] SUCCESS: WEB-211
+[Mon Oct 12 11:47:02 2026] FAILED: WEB-219
+[Mon Oct 12 13:05:55 2026] SUCCESS: WEB-231"
+
+# working + full-auto ON
+item WEB-312 webapp "[RUNNER] Locked to working directory: /Users/you/code/webapp_deputy_WEB-312
+ITEM_URL: $SITE/browse/WEB-312
+
+━━━ [mcp__tracker__get_item] ━━━
+{\"itemId\":\"WEB-312\"}
+↳ Add a dark-mode toggle to the settings page, persisted per-user.
+
+[ASSISTANT] Adding a \`theme\` preference and a toggle in Settings. Wiring it through the ThemeProvider now.
+
+━━━ [Edit] ━━━
+{\"file_path\":\"src/settings/Appearance.tsx\"}
+↳ ok
+
+[ASSISTANT] Toggle in place; writing the provider test next."
+w "deputy-auto-WEB-312" "1"
+
+# needs-your-call (parked on a question)
+wl "deputy-ask-WEB-318.txt" "The checkout page has no empty-cart state. Should I use the muted illustration (matches the dashboard) or a plain text prompt?"
+wl "deputy-paused-WEB-318.meta" "webapp"
+printf '%s\n' "[RUNNER] Locked to working directory: /Users/you/code/webapp_deputy_WEB-318
+ITEM_URL: $SITE/browse/WEB-318
+[ASSISTANT] The checkout flow is done except the empty-cart state — I need a product call on this.
+[NEEDS-INPUT] Should I use the muted illustration or a plain text prompt for the empty cart?" > "$DIR/deputy-item-WEB-318.log"
+
+# blocked (stacked on WEB-312)
+wl "deputy-blocked-WEB-324.meta" "webapp"
+wl "deputy-blocked-WEB-324.txt" "WEB-312 not started yet"
+itemlog_only WEB-324
+
+# failed (push blew up, work kept)
+wl "deputy-failed-WEB-277.meta" "webapp"
+printf '%s\n' "finished without opening a PR (the push or PR step failed)
+fatal: unable to access 'https://github.com/acme/webapp.git/': CONNECT tunnel failed, response 403" > "$DIR/deputy-failed-WEB-277.txt"
+itemlog_only WEB-277
+
+# stopped (kept, re-runnable)
+wl "deputy-stopped-WEB-265.meta" "webapp"
+itemlog_only WEB-265
+
+# in-review PRs (one with comments, one clean)
+cat > "$DIR/deputy-prs-webapp.json" <<JSON
+[
+  {"number":812,"title":"feat: redesign the account page [WEB-301]","url":"https://github.com/acme/webapp/pull/812","branch":"you/web-301","ticket":"WEB-301","item":"$SITE/browse/WEB-301","comments":[
+    {"author":"dana","path":"src/account/AccountPage.tsx","line":84,"body":"Debounce this save handler so we don't fire on every keystroke.","url":"https://github.com/acme/webapp/pull/812#discussion_r1"},
+    {"author":"lint-bot","path":"src/account/AccountPage.tsx","line":12,"body":"'useMemo' is imported but never used.","url":"https://github.com/acme/webapp/pull/812#discussion_r2"}
+  ]},
+  {"number":806,"title":"fix: pagination off-by-one on the orders list [WEB-298]","url":"https://github.com/acme/webapp/pull/806","branch":"you/web-298","ticket":"WEB-298","item":"$SITE/browse/WEB-298","comments":[]}
+]
+JSON
+
+# ============================ DEPUTY: api (on patrol) ============================
+deputy api "/Users/you/code/api" "$API_PID" "[Mon Oct 12 08:30:00 2026] SUCCESS: API-31
+[Mon Oct 12 12:12:12 2026] SUCCESS: API-38"
+
+item API-45 api "[RUNNER] Locked to working directory: /Users/you/code/api_deputy_API-45
+ITEM_URL: $SITE/browse/API-45
+
+[ASSISTANT] Adding cursor pagination to GET /v2/orders. Writing the request specs now.
+
+━━━ [Bash] ━━━
+bundle exec rspec spec/requests/orders_spec.rb
+↳ 14 examples, 0 failures"
+
+cat > "$DIR/deputy-prs-api.json" <<JSON
+[
+  {"number":220,"title":"feat: idempotency keys for payments [API-40]","url":"https://github.com/acme/api/pull/220","branch":"you/api-40","ticket":"API-40","item":"$SITE/browse/API-40","comments":[
+    {"author":"ravi","path":"app/services/payments.rb","line":57,"body":"Return 409 on a key collision, not 422.","url":"https://github.com/acme/api/pull/220#discussion_r9"}
+  ]}
+]
+JSON
+
+# ============================ DEPUTY: mobile (off duty) ============================
+deputy mobile "/Users/you/code/mobile" "$DEAD_PID" "[Sun Oct 11 17:40:00 2026] SUCCESS: MOB-80"
+cat > "$DIR/deputy-prs-mobile.json" <<JSON
+[
+  {"number":77,"title":"feat: offline cache for the feed [MOB-88]","url":"https://github.com/acme/mobile/pull/77","branch":"you/mob-88","ticket":"MOB-88","item":"$SITE/browse/MOB-88","comments":[]}
+]
+JSON
+
+echo "Seeded demo state in $DIR"
+echo "Deputies: webapp (on patrol), api (on patrol), mobile (off duty)"
+echo "States: working, full-auto, needs-your-call, blocked, failed, stopped, in-review (+comments)"
+echo
+echo "View it:"
+echo "  DEPUTY_TMP=$DIR DEPUTY_SITE_URL=$SITE DEPUTY_DASHBOARD_PORT=4320 npm run dashboard"
+echo "  (or: npm run demo)   then open http://localhost:4320"
+echo "Stop the sleepers when done:  bin/seed-demo --stop"

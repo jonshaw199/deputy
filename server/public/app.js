@@ -2,8 +2,7 @@ const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const trunc = (s, n) => { s = String(s || ''); return s.length <= n ? esc(s) : esc(s.slice(0, n).replace(/\s+\S*$/, '')) + '…'; };
-let siteUrl = ''; // tracker base, e.g. https://acme.atlassian.net — set from /api/status
-// Turn ticket keys (WEB-123) in a string into links to the tracker.
+let siteUrl = '';
 const linkTickets = (s) => esc(String(s || '')).replace(/\b([A-Z][A-Z0-9]+-\d+)\b/g, (k) => siteUrl ? `<a href="${siteUrl}/browse/${k}" target="_blank">${k}</a>` : k);
 // Sharp pistol silhouette (emoji 🔫 renders as a toy water gun on macOS).
 const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="3" y="7" width="18" height="3.2" rx=".6"/><path d="M7 10l-1.6 6a1 1 0 0 0 1 1.3h2.4a1 1 0 0 0 1-.7L11.6 10z"/><rect x="18.4" y="5.7" width="2.6" height="2" rx=".4"/></svg>';
@@ -26,6 +25,11 @@ function badge(outcome) {
 // One case per ticket. Every row is the same shape; stage shows only via the dot
 // colour (blue = working, amber = needs you, green = in review) and the content.
 // Clicking opens the live chat for a live agent, or the PR's review comments in-review.
+function openCaseModal(c) {
+  if (c.state === 'in-review') openLog({ pr: { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] }, project: c.project }, `${c.ticket} · review`);
+  else openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input', blocked: c.state === 'blocked', failed: c.state === 'failed', stopped: c.state === 'stopped' }, `${c.ticket} · case log`);
+}
+
 function caseRow(c) {
   const review = c.state === 'in-review';
   const blocked = c.state === 'blocked';
@@ -39,7 +43,6 @@ function caseRow(c) {
     c.pr ? `<a href="${c.pr}" target="_blank">PR</a>` : '',
   ].filter(Boolean).join(' · ');
 
-  // One colour per state: blue = working, amber = needs you, grey = blocked/stopped, red = failed, green = in review.
   const dot = c.state === 'needs-input' ? 'warn' : failed ? 'fail' : (blocked || stopped) ? 'wait' : review ? 'ok' : 'busy';
   const dotTitle = c.state === 'needs-input' ? 'Needs your call'
     : failed ? 'Failed — needs your attention' : stopped ? 'Stopped — ▶ to re-run' : blocked ? 'Blocked — waiting on a dependency' : review ? 'In review' : 'Working';
@@ -54,16 +57,16 @@ function caseRow(c) {
     : `<div class="sub">${trunc(review ? c.title : c.phase, 180)}</div>`;
 
   const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: don't ask me questions, just decide and keep going">${GUN}</span>`;
-  // ▶ re-run on a stopped/failed case (resume if possible, else finish/restart).
   const canRerun = failed || stopped;
-  const rerun = canRerun ? `<span class="iconbtn" data-rerun title="Re-run: bring this case back (resumes where it left off if it can)">${PLAY}</span>` : '';
-  // ✕: forget a stopped/failed case, stop a live one, drop a blocked one, dismiss an in-review one.
+  const rerun = canRerun
+    ? `<span class="iconbtn" data-rerun title="Re-run: bring this case back (resumes where it left off if it can)">${PLAY}</span>`
+    : `<span class="iconbtn" aria-hidden="true" style="visibility:hidden">${PLAY}</span>`;
   const xTitle = (failed || stopped) ? 'Forget: remove this case + its worktree' : blocked ? 'Drop this blocked case' : live ? 'Stop: halt the agent (keeps the worktree)' : 'Hide this finished case (comes back only if a new review comment lands)';
   const stop = `<span class="iconbtn danger" data-x title="${xTitle}">${X_ICON}</span>`;
   const row = el('div', c.state === 'needs-input' ? 'case needs-input' : 'case');
   row.innerHTML = `
     <div class="case-head"><span class="dot ${dot}" title="${dotTitle}"></span> <b>${esc(c.ticket)}</b> ${chip}
-      <span class="case-actions">${gun}${rerun}${stop}</span></div>
+      <span class="case-actions">${rerun}${gun}${stop}</span></div>
     ${detail}
     ${links ? `<div class="sub">${links}</div>` : ''}`;
   row.style.cursor = 'pointer';
@@ -72,9 +75,7 @@ function caseRow(c) {
     await api('/api/auto', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, on: !c.auto }) });
     refresh();
   };
-  row.onclick = review
-    ? () => openLog({ pr: { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] }, project: c.project }, `${c.ticket} · review`)
-    : () => openLog({ ticket: c.ticket, needsInput: c.state === 'needs-input', blocked, failed, stopped }, `${c.ticket} · case log`);
+  row.onclick = () => openCaseModal(c);
   const rerunBtn = row.querySelector('[data-rerun]');
   if (rerunBtn) rerunBtn.onclick = async (e) => {
     e.stopPropagation();
@@ -124,27 +125,25 @@ function renderDeputies(daemons, orphans) {
       if (failedCount) parts.push(`⚠️ ${failedCount} failed`);
       status = parts.join(' · ') || 'on patrol';
     }
-    card.append(el('div', 'row', `
+    const head = el('div', 'row deputy-head');
+    head.innerHTML = `
       <div>
         <h3><span class="dot ${dot}"></span> ${esc(d.project)}</h3>
         <div class="sub">${status}${d.running ? ` · pid ${d.pid} · checks every ${d.interval}s` : ''}</div>
         <div class="sub">${esc(d.repoDir || '')}</div>
-      </div>`));
+      </div>
+      <div class="deputy-actions">
+        ${d.running ? `<span class="iconbtn danger" data-standdown title="Stand down this deputy (stops the daemon)">${X_ICON}</span>` : ''}
+      </div>`;
+    head.onclick = () => openLog({ daemon: d.project }, `${d.project} · log`);
+    const sd = head.querySelector('[data-standdown]');
+    if (sd) sd.onclick = async (e) => { e.stopPropagation(); if (!confirm(`Stand ${d.project} down? (stops the daemon; cases can be resumed on restart)`)) return; await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project }) }); refresh(); };
+    card.append(head);
     if (cases.length) {
       const sec = el('div', 'recent');
       for (const c of cases) sec.append(caseRow(c));
       card.append(sec);
     }
-    const footer = el('div', 'recent actions-row');
-    const pl = el('button', 'linklike', 'patrol log');
-    pl.onclick = () => openLog({ daemon: d.project }, `${d.project} · patrol log`);
-    footer.append(pl);
-    if (d.running) {
-      const stop = el('button', 'linklike danger', 'stand down');
-      stop.onclick = async () => { if (!confirm(`Stand ${d.project} down?`)) return; await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: d.project }) }); refresh(); };
-      footer.append(stop);
-    }
-    card.append(footer);
     wrap.append(card);
   }
   if (orphans?.length) {
@@ -180,10 +179,16 @@ async function refresh() {
     }
     renderDeputies(s.daemons, s.orphans);
     if (logTarget) refreshLog();
+    if (!deepLinked) {
+      const t = new URLSearchParams(location.search).get('case');
+      const c = t && allCases.find((x) => x.ticket === t);
+      if (c) { deepLinked = true; openCaseModal(c); }
+    }
   } catch (e) {
     $('#updated').textContent = 'server unreachable';
   }
 }
+let deepLinked = false;
 
 let logTimer = null;
 let pendingEcho = '';   // your just-sent message, shown until the real log line lands

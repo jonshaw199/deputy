@@ -7,8 +7,7 @@
 A local daemon that watches a tracker (Jira or GitHub Issues) for ready,
 AI-labelled work items and resolves each one autonomously with the
 [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk):
-isolated git worktree → implement → push → draft PR → move the item forward.
-Comes with a live web dashboard.
+isolated git worktree → implement → push → draft PR. Comes with a live web dashboard.
 
 ![Deputy dashboard](docs/dashboard.png)
 
@@ -23,16 +22,38 @@ worktree, writes the code, and opens a draft PR. You can watch any deputy work a
 
 ## Why
 
-You label a ticket `ai-ready`. A few minutes later there's a draft PR waiting for
-review and the ticket is in review. No copy-pasting tickets into a chat window, no
+You label a ticket `ai-ready` and assign it to yourself. A few minutes later there's a
+draft PR waiting for review. No copy-pasting tickets into a chat window, no
 babysitting. It works autonomously and only pings you ("needs your call") when it
 genuinely can't decide something, then resumes on your answer. It runs on your
 machine, uses your credentials, and each change lands in its own throwaway git
 worktree (or the one you already have open, if you're collaborating).
 
+## What makes it different
+
+Plenty of tools turn an issue into a PR. Deputy's take is specific:
+
+- **Local and yours.** Runs on *your* machine with *your* credentials — no cloud, nothing
+  leaving your box, no lock-in. The agent is a swappable command (not tied to Claude) and
+  trackers are pluggable.
+- **It patrols your real backlog, hands-off.** It watches your tracker and picks up tickets
+  labelled **and assigned to you** — you never paste a ticket into a chat window. Label it,
+  walk away, come back to a PR.
+- **A fleet, not a single chat.** Many repos, many deputies, many cases running at once, in
+  one dashboard — not one editor session at a time.
+- **It never speaks on your PR.** Review comments (from people *or* bots) are surfaced to
+  *you*; Deputy edits the code and pushes, but you stay the only voice on the PR. Most bots
+  reply and resolve threads for you — this one deliberately won't.
+- **Genuine human-in-the-loop.** It stops to ask when it shouldn't guess and resumes the
+  *same* session on your answer, and you can chat with it live mid-run.
+- **Dependency-aware stacked PRs.** Hand it a whole epic; it works out the order and stacks
+  the PRs, moving sibling tickets in parallel.
+- **It won't lose your work.** Cases are journaled, so they resume after a restart, reboot,
+  or crash; a run that can't open its PR is recovered by the daemon, never silently dropped.
+
 ## Highlights
 
-- **Fully autonomous loop** — poll → implement → push → draft PR → advance the item.
+- **Fully autonomous loop** — poll → isolated worktree → implement → push → draft PR.
 - **Fixes its own CI** — watches its PRs; when CI goes red it pulls the failures +
   annotations and pushes a fix automatically.
 - **Surfaces review comments, never replies** — watches its open PRs for unresolved
@@ -72,8 +93,8 @@ worktree (or the one you already have open, if you're collaborating).
   collaborating on a branch you already have open, see above).
 - **Concurrent** — processes multiple items at once, each fully sandboxed.
 - **Live dashboard** — deputies on patrol, each ticket shown as one case at its stage
-  (working / needs your call / blocked / in review) with a streaming log, live chat, the
-  🔫 full-auto toggle, and one-click deputize / stand down.
+  (working / needs your call / blocked / failed / stopped / in review) with a streaming log,
+  live chat, the 🔫 full-auto toggle, ▶ re-run, and one-click deputize / stand down.
 - **Zero company lock-in** — all config lives in `.env`; the repo carries no
   secrets and nothing employer-specific. Fork it, point it anywhere.
 
@@ -111,19 +132,25 @@ bin/daemon autostart-install                                # run at login, surv
 ## Day to day
 
 1. **Post a deputy** to a repo — `Deputize` it in the dashboard, or `cd <repo> && /path/to/deputy/bin/daemon start`.
-2. **Hand it a case** — label a ticket `ai-ready` (Jira or GitHub Issues). The deputy picks it up on its next patrol (≤ `CHECK_INTERVAL`).
+2. **Hand it a case** — label a ticket `ai-ready` **and assign it to yourself** (Jira or GitHub Issues), so only your deputy grabs it. It's picked up on the next patrol (≤ `CHECK_INTERVAL`).
 3. **Watch it work** — open the dashboard (`npm run dashboard` → http://localhost:4319). The case shows under its deputy with a streaming log.
 4. **Steer it live** — open the case and type in the reply box; it answers in the same session.
-5. **It finishes on its own** — opens a draft PR and advances the ticket. If the PR's CI goes red, it fixes it automatically.
-6. **Clear it** — ✕ on a case stops a live agent (keeps its worktree) or hides a finished one; "stand down" stops the whole deputy.
+5. **It finishes on its own** — opens a draft PR (the ticket's status is yours to move). If the PR's CI goes red, it fixes it automatically.
+6. **Clear it** — ✕ stops a live case (kept, **▶ re-runnable**), forgets a stopped/failed one, or hides a finished one; the deputy's own ✕ (top-right) stands it down.
 
 ## Talking to deputies
 
 ![Chatting with a deputy mid-run](docs/chat.png)
 
-Review comments surface on the case, you tell Deputy what to fix, it never replies on the PR:
+Review comments surface on the case, you tell Deputy what to fix, it never replies on the PR
+(type a fix, or **address all** at once):
 
 ![Reviewing a PR's comments](docs/review.png)
+
+When a case needs a decision it shouldn't make alone, it parks and asks — answer in the same
+box, or let it decide:
+
+![A case that needs your call](docs/needs-input.png)
 
 - **When a deputy needs your call:** if it hits something it shouldn't decide alone,
   it parks the case and surfaces its question (flagged "needs your call" on the
@@ -144,10 +171,10 @@ Review comments surface on the case, you tell Deputy what to fix, it never repli
 
 Pick where work comes from with `DEPUTY_TRACKER`:
 
-| Tracker  | Polls                          | "started" / "done"                |
-|----------|--------------------------------|-----------------------------------|
-| `jira`   | any ticket with the label      | removes the label, moves status   |
-| `github` | open issues with the label     | swaps labels                      |
+| Tracker  | Polls                                   | on pickup / done                          |
+|----------|-----------------------------------------|-------------------------------------------|
+| `jira`   | tickets labelled **and assigned to you** | drops the label; status is yours to move  |
+| `github` | open issues labelled **and assigned to you** | swaps the ready label for in-progress |
 
 Each tracker is one small module (~80 lines) in
 [`lib/trackers/`](lib/trackers/); adding another (Linear, etc.) is covered in
@@ -158,11 +185,11 @@ dashboard are all tracker-agnostic.
 
 ```
          ┌──────────── bin/daemon (one per repo) ─────────┐
- tracker │  poll ready items  ──▶  for each item:         │
-  (Jira/ │                          • git worktree off origin/main
+ tracker │  poll (labelled + assigned to you) ─▶ per item: │
+  (Jira/ │                          • git worktree (off main, or a parent branch when stacked)
   GitHub)│                          • run the agent (Claude Agent SDK)
          │                          • push branch, open draft PR          │
-         │                          • mark the item done                  │
+         │                          • journal the case so it can resume   │
          └────────────────────────────────────────────────┘
                      ▲                         │ reads /tmp state
                      │ start / stop            ▼
@@ -189,6 +216,24 @@ a GitHub token. Notable knobs:
 - `DEPUTY_WORKTREE_SETUP` — command run in each fresh worktree, e.g. `bundle install && yarn install` (so tests/hooks pass)
 - `DEPUTY_AGENT_CMD` — the agent command; defaults to the bundled Claude runner, swap for any other
 - `DEPUTY_PR_LABEL` — label put on deputy PRs (also how CI auto-fix finds them)
+
+## On your phone, too
+
+The dashboard is responsive, so you can check on your deputies (and answer a "needs your
+call") from a phone browser.
+
+<img src="docs/dashboard-mobile.png" width="320" alt="Deputy on mobile" />
+
+## Try it with mock data
+
+Want to see the whole board without wiring up a tracker? Seed a fake one:
+
+```bash
+npm run demo        # mock deputies + every case state → http://localhost:4320
+```
+
+That writes a self-contained demo state (generic repos/tickets, no real agents) — handy for
+a look around or for screenshots. Stop the helper processes with `bin/seed-demo --stop`.
 
 ## Contributing
 
