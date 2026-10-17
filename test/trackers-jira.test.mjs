@@ -57,6 +57,11 @@ test('listReady throws on Jira errorMessages', async () => {
   await assert.rejects(() => jira.listReady(), /bad JQL/);
 });
 
+test('listReady throws on an HTTP error (bad credentials), not a silent empty list', async () => {
+  stub(() => ({ ok: false, status: 401, body: { message: 'Unauthorized' } }));
+  await assert.rejects(() => jira.listReady(), /Jira API 401/);
+});
+
 test('markStarted removes the pickup label and never touches status', async () => {
   stub((url, opts) => {
     const m = opts.method || 'GET';

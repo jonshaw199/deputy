@@ -8,6 +8,8 @@
     "deputy": "bin/daemon"
   },
   "scripts": {
+    "setup": "node lib/setup.mjs",
+    "doctor": "bin/daemon doctor",
     "dashboard": "node server/server.mjs",
     "demo": "bin/seed-demo && DEPUTY_TMP=/tmp/deputy-demo DEPUTY_SITE_URL=https://acme.atlassian.net DEPUTY_DASHBOARD_PORT=4320 node server/server.mjs",
     "start": "bin/daemon start",

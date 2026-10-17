@@ -1142,8 +1142,34 @@ function run_foreground() {
   watch_and_process
 }
 
+# Preflight: verify prerequisites + config + credentials and say exactly what's missing.
+function doctor() {
+  local bad=0
+  echo "Deputy doctor"
+  command -v node >/dev/null 2>&1 && echo "  ✓ node ($(node -v))" || { echo "  ✗ node — install Node ≥18"; bad=1; }
+  local nv; nv=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)
+  { [ -n "$nv" ] && [ "$nv" -lt 18 ]; } && { echo "  ✗ node must be ≥18 (have $(node -v))"; bad=1; }
+  command -v git >/dev/null 2>&1 && echo "  ✓ git" || { echo "  ✗ git — not installed"; bad=1; }
+  command -v jq  >/dev/null 2>&1 && echo "  ✓ jq"  || { echo "  ✗ jq — e.g. brew install jq"; bad=1; }
+  if command -v gh >/dev/null 2>&1; then
+    gh auth status >/dev/null 2>&1 && echo "  ✓ gh (authenticated)" || { echo "  ✗ gh not authenticated — run: gh auth login"; bad=1; }
+  else echo "  ✗ gh — install the GitHub CLI"; bad=1; fi
+  [ -f "$PROJECT_ROOT/.env" ] && echo "  ✓ .env present" || { echo "  ✗ .env missing — run: npm run setup"; bad=1; }
+  local tracker="${DEPUTY_TRACKER:-jira}"
+  req() { [ -n "${!1}" ] && echo "  ✓ $1" || { echo "  ✗ $1 missing"; bad=1; }; }
+  req DEPUTY_GITHUB_TOKEN
+  if [ "$tracker" = "jira" ]; then req DEPUTY_CLOUD_ID; req DEPUTY_USER_EMAIL; req DEPUTY_API_TOKEN; req DEPUTY_SITE_URL
+  else req DEPUTY_GITHUB_REPO; fi
+  printf "  tracker poll (%s)… " "$tracker"
+  node "$TRACKER_CLI" list-ready >/dev/null 2>&1 && echo "ok ✓" || { echo "FAILED ✗ — check your credentials"; bad=1; }
+  echo
+  [ $bad -eq 0 ] && echo "All good — run: $DAEMON_BIN start" || echo "Fix the ✗ items above (npm run setup to rewrite .env)."
+  return $bad
+}
+
 case "$1" in
   start)       start_daemon ;;
+  doctor)      doctor ;;
   stop)        stop_daemon ;;
   restart)     [ -f "$DAEMON_PID_FILE" ] && stop_daemon; sleep 1; start_daemon ;;
   status)      status_daemon ;;
@@ -1156,5 +1182,5 @@ case "$1" in
   forget-ticket) forget_ticket "$2" ;;         # deputy forget-ticket <TICKET>  (delete worktree + state)
   stop-ticket) stop_ticket "$2" ;;             # cancel one in-flight ticket
   __run)       watch_and_process ;;            # internal: the backgrounded poll loop
-  *) echo "Usage: $0 {start|stop|restart|status|autostart-install|autostart-uninstall|continue <TICKET> \"<prompt>\"|resume <TICKET> \"<answer>\"|rerun <TICKET>|stop-ticket <TICKET>|forget-ticket <TICKET>}"; exit 1 ;;
+  *) echo "Usage: $0 {start|stop|restart|status|doctor|autostart-install|autostart-uninstall|continue <TICKET> \"<prompt>\"|resume <TICKET> \"<answer>\"|rerun <TICKET>|stop-ticket <TICKET>|forget-ticket <TICKET>}"; exit 1 ;;
 esac

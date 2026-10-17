@@ -101,9 +101,12 @@ Plenty of tools turn an issue into a PR. Deputy's take is specific:
 ## Quickstart
 
 ```bash
-cp .env.example .env     # fill in your tracker + GitHub credentials
-npm install              # for the dashboard (the daemon installs its own runtime deps)
+npm install          # for the dashboard (the daemon installs its own runtime deps)
+npm run setup        # interactive wizard: tracker + GitHub creds → writes .env, validates
+npm run doctor       # verify prerequisites (node/git/gh/jq) + credentials
 ```
+
+Prefer to do it by hand? `cp .env.example .env` and fill it in — it's self-documenting.
 
 Run it **from the repo you want it to work on**:
 
@@ -127,6 +130,29 @@ bin/daemon stop-ticket <TICKET>                              # stop one case (ke
 bin/daemon rerun <TICKET>                                   # bring a stopped/failed case back
 bin/daemon forget-ticket <TICKET>                           # delete a case + its worktree
 bin/daemon autostart-install                                # run at login, survive a reboot
+```
+
+### Setup & health check
+
+- **`npm run setup`** — interactive wizard. Pick your tracker, paste your Jira/GitHub
+  credentials, and it writes `.env` and confirms it works with a live poll. Prefer to do it
+  by hand? `cp .env.example .env` (it's self-documenting).
+- **`npm run doctor`** — preflight. Checks `node` ≥18, `git`, `gh` (authenticated), and `jq`,
+  that your `.env` has everything the tracker needs, and that a real poll succeeds — printing
+  exactly what's missing. Run it any time something seems off.
+
+```
+$ npm run doctor
+Deputy doctor
+  ✓ node (v20.19.4)
+  ✓ git
+  ✓ jq
+  ✓ gh (authenticated)
+  ✓ .env present
+  ✓ DEPUTY_GITHUB_TOKEN
+  ✓ DEPUTY_CLOUD_ID … DEPUTY_SITE_URL
+  tracker poll (jira)… ok ✓
+All good — run: bin/daemon start
 ```
 
 ## Day to day
