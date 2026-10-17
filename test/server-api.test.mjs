@@ -132,6 +132,14 @@ test('POST /api/rerun and /api/forget require a ticket', async () => {
   assert.equal((await post('/api/forget', {})).status, 400);
 });
 
+test('cases are sorted attention-first (needs-input/failed) then by ticket', async () => {
+  const s = await (await get('/api/status')).json();
+  const web = s.daemons.find((x) => x.project === 'webapp');
+  const rank = { 'needs-input': 0, failed: 1, working: 2, blocked: 3, stopped: 4, 'in-review': 5 };
+  const ranks = web.cases.map((c) => rank[c.state] ?? 9);
+  assert.deepEqual(ranks, [...ranks].sort((a, b) => a - b), 'cases not in attention-first order');
+});
+
 test('POST /api/continue queues a follow-up carrying the PR branch', async () => {
   const r = await post('/api/continue', { project: 'api', ticket: 'WEB-290', branch: 'dev/web-290', prompt: 'address the debounce comment' });
   assert.equal(r.status, 200);

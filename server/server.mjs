@@ -202,9 +202,12 @@ export function makeServer(opts = {}) {
       if (ex) { ex.pr = p.url; ex.branch = p.branch; ex.comments = p.comments; ex.prNumber = p.number; if (!ex.item) ex.item = p.item; }
       else byTicket.set(key, { ticket: key, project, state: 'in-review', title: p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item });
     }
+    // Sort attention-first (needs-you / failed on top), then by ticket (natural order).
+    const rank = { 'needs-input': 0, failed: 1, working: 2, blocked: 3, stopped: 4, 'in-review': 5 };
     return [...byTicket.values()]
       .filter((c) => !(c.state === 'in-review' && isDismissed(c.ticket, c.comments)))
-      .map((c) => ({ ...c, auto: isAuto(c.ticket) }));
+      .map((c) => ({ ...c, auto: isAuto(c.ticket) }))
+      .sort((a, b) => (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || String(a.ticket).localeCompare(String(b.ticket), undefined, { numeric: true }));
   }
 
   const json = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
