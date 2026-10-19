@@ -263,7 +263,6 @@ function renderDetails(target) {
     const r = await api('/api/open-in-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: target.ticket }) });
     ob.disabled = false; ob.textContent = label;
     if (r.error) alert(r.error);
-    else ob.textContent = r.resumedSession ? 'Opened (resuming) ✓' : 'Opened (fresh chat) ✓';
   };
 }
 // Build the instruction for a PR follow-up, auto-attaching the unresolved comments so
