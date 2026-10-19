@@ -55,6 +55,8 @@ Plenty of tools turn an issue into a PR. Deputy's take is specific:
   Claude Code by default), resuming the agent's conversation. Pruned when the PR merges.
 - **Follows your repo** — reads the repo's `CLAUDE.md` / conventions and fills out its PR
   template.
+- **Reuses a branch you've started** — if the ticket's branch is already checked out in a
+  worktree, the deputy works there and pushes to the same PR instead of starting its own.
 - **Dependency-aware stacked PRs** — label a whole epic at once; each deputy reads its
   "blocked by" links, waits (shown **blocked**) until a dependency has a branch, then stacks
   its PR on the parent. Children stay rebased as parents move, and rebase onto `main` +
@@ -81,8 +83,15 @@ Then **deputize a repo** (a deputy is just the daemon running in one repo). Clic
 cd ~/code/my-app && /path/to/deputy/bin/daemon start   # also: stop | status | restart
 ```
 
-Other verbs: `continue <TICKET> "…"`, `stop-ticket <TICKET>`, `rerun <TICKET>`,
-`forget-ticket <TICKET>`, `autostart-install` (run at login, survive a reboot).
+Other verbs:
+
+```bash
+bin/daemon continue <TICKET> "…"    # follow up on its PR (warm-resumes the session)
+bin/daemon stop-ticket <TICKET>     # halt a case (kept, ▶ re-runnable)
+bin/daemon rerun <TICKET>           # bring a stopped/failed case back
+bin/daemon forget-ticket <TICKET>   # delete a case + its worktree
+bin/daemon autostart-install        # run at login, survive a reboot
+```
 
 ## Day to day
 
