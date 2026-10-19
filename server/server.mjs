@@ -207,7 +207,7 @@ export function makeServer(opts = {}) {
       const key = p.ticket || `PR-${p.number}`;
       const ex = byTicket.get(p.ticket);
       if (ex) { ex.pr = p.url; ex.branch = p.branch; ex.comments = p.comments; ex.prNumber = p.number; if (!ex.item) ex.item = p.item; }
-      else byTicket.set(key, { ticket: key, project, state: 'in-review', title: p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item });
+      else byTicket.set(key, { ticket: key, project, state: 'in-review', title: p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item, worktree: caseWorktree(p.ticket) });
     }
     // Sort attention-first (needs-you / failed on top), then by ticket (natural order).
     const rank = { 'needs-input': 0, failed: 1, working: 2, blocked: 3, stopped: 4, 'in-review': 5 };
