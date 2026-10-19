@@ -31,7 +31,7 @@ function openCaseModal(c) {
     live: c.state === 'working' || c.state === 'needs-input',
     needsInput: c.state === 'needs-input', blocked: c.state === 'blocked', failed: c.state === 'failed', stopped: c.state === 'stopped',
     pr: c.pr ? { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] } : null,
-  }, c.ticket);
+  }, c.title ? `${c.ticket} · ${c.title}` : c.ticket);
 }
 
 function caseRow(c) {

@@ -50,6 +50,10 @@ AUTOMATION_BASE_DIR="${MAIN_PROJECT_DIR}_deputy"
 CASES_DIR="${AUTOMATION_BASE_DIR}/cases"
 journal_file() { echo "${CASES_DIR}/${1}.json"; }
 session_file_for() { echo "${CASES_DIR}/${1}.session"; }
+# Stacked-PR records live here (not /tmp) so they outlive the case journal and survive reboot;
+# they must persist until the child PR merges, long after the child's own work is done.
+STACKS_DIR="${AUTOMATION_BASE_DIR}/stacks"
+stack_record() { echo "${STACKS_DIR}/${1}.json"; }
 # write_journal <ticket> <status> <project> <worktree> <branch> <base_kind> <stack_branch> <stack_parent>
 function write_journal() {
   mkdir -p "$CASES_DIR"
@@ -419,24 +423,35 @@ function resync_stack() {
   local lock_file="/tmp/deputy-item-${ticket_id}-cont-sync.lock"
   local meta_file="/tmp/deputy-item-${ticket_id}-cont-sync.meta"
   local log_file="/tmp/deputy-item-${ticket_id}-cont-sync.log"
-  local sf="/tmp/deputy-stack-${ticket_id}.json"
-  local wt="${AUTOMATION_BASE_DIR}_${ticket_id}_sync"
+  local sf; sf=$(stack_record "$ticket_id")
   echo "$PROJECT_NAME" > "$meta_file"
   trap "rm -f '$lock_file' '$meta_file'" EXIT
 
   echo "[$(date)] Rebase $child_branch --onto $newbase_ref (drop $oldbase, mode=$mode)" > "$log_file"
   cd "$MAIN_PROJECT_DIR" || { rm -f "$lock_file"; return 1; }
-  git worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$wt" 2>/dev/null || true
-  git worktree prune 2>/dev/null || true
+
+  # Rebase in deputy's own kept worktree when the branch lives in one (so it stays current for
+  # local testing); otherwise spin a throwaway sync worktree. Foreign worktrees never reach here.
+  local wt own=1; wt=$(worktree_for_branch "$child_branch")
+  if [ -z "$wt" ] || [[ "$wt" != "${AUTOMATION_BASE_DIR}_"* ]]; then
+    own=0; wt="${AUTOMATION_BASE_DIR}_${ticket_id}_sync"
+    git worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$wt" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+  fi
+
   git fetch origin "$child_branch" >> "$log_file" 2>&1 || true
   git fetch origin main >> "$log_file" 2>&1 || true
   [ "$mode" = "update" ] && { git fetch origin "$parent_branch" >> "$log_file" 2>&1 || true; }
 
-  if ! git worktree add -B "$child_branch" "$wt" "origin/$child_branch" >> "$log_file" 2>&1; then
-    echo "[$(date)] Stack resync FAILED: $ticket_id (cannot checkout $child_branch)" >> "$DAEMON_LOG_FILE"
-    return 1
+  if [ "$own" -eq 0 ]; then
+    if ! git worktree add -B "$child_branch" "$wt" "origin/$child_branch" >> "$log_file" 2>&1; then
+      echo "[$(date)] Stack resync FAILED: $ticket_id (cannot checkout $child_branch)" >> "$DAEMON_LOG_FILE"
+      return 1
+    fi
+    setup_worktree "$wt" "$log_file"
+  else
+    git -C "$wt" reset --hard "origin/$child_branch" >> "$log_file" 2>&1 || true
   fi
-  setup_worktree "$wt" "$log_file"
 
   # Retarget the PR base first (idempotent); the diff tidies once the rebased branch lands.
   [ "$mode" = "retarget" ] && { (cd "$MAIN_PROJECT_DIR" && gh pr edit "$child_branch" --base main >> "$log_file" 2>&1) || true; }
@@ -451,13 +466,11 @@ function resync_stack() {
       jq --arg s "$newsha" '.last_parent_sha=$s' "$sf" > "${sf}.tmp" 2>/dev/null && mv -f "${sf}.tmp" "$sf"
       echo "[$(date)] Stack: $ticket_id rebased on updated $parent_branch @ ${newsha:0:8}" >> "$DAEMON_LOG_FILE"
     fi
-    cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-    git worktree prune 2>/dev/null || true
+    [ "$own" -eq 0 ] && { cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; git worktree prune 2>/dev/null || true; }
   else
     # Rare: the rebase conflicts. Abort to a clean state and hand it to the agent to resolve.
     git -C "$wt" rebase --abort >> "$log_file" 2>&1 || true
-    cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-    git worktree prune 2>/dev/null || true
+    [ "$own" -eq 0 ] && { cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; git worktree prune 2>/dev/null || true; }
     echo "[$(date)] Stack: $ticket_id rebase conflicted; handing to the agent" >> "$DAEMON_LOG_FILE"
     local target_base="$newbase_ref"; [ "$mode" = "retarget" ] && target_base="origin/main"
     local rp="Rebase branch $child_branch so it sits cleanly on top of $target_base.
@@ -492,7 +505,7 @@ function prune_merged_worktrees() {
     if git worktree remove --force "$path" 2>>"$DAEMON_LOG_FILE"; then
       git branch -D "$short" >/dev/null 2>&1 || true
       clear_journal "$ticket"
-      rm -f "/tmp/deputy-stack-${ticket}.json" "/tmp/deputy-stopped-${ticket}.meta" \
+      rm -f "$(stack_record "$ticket")" "/tmp/deputy-stopped-${ticket}.meta" \
             "/tmp/deputy-failed-${ticket}.meta" "/tmp/deputy-failed-${ticket}.txt"
       echo "[$(date)] Pruned $ticket worktree (PR $state): $path" >> "$DAEMON_LOG_FILE"
     fi
@@ -507,11 +520,11 @@ function maintain_stacks() {
   [ "${DEPUTY_STACK_AUTOSYNC:-true}" = "true" ] || return 0
   command -v gh >/dev/null 2>&1 || return 0
   local sf ticket sproj parent_branch child_branch oldbase
-  for sf in /tmp/deputy-stack-*.json; do
+  for sf in "${STACKS_DIR}"/*.json; do
     [ -f "$sf" ] || continue
     sproj=$(jq -r '.project // empty' "$sf" 2>/dev/null)
     [ "$sproj" = "$PROJECT_NAME" ] || continue
-    ticket=$(basename "$sf" .json | sed 's/^deputy-stack-//')
+    ticket=$(basename "$sf" .json)
 
     # Don't touch a child that is actively working, parked, or blocked.
     local clock="/tmp/deputy-item-${ticket}.lock" synclock="/tmp/deputy-item-${ticket}-cont-sync.lock"
@@ -524,7 +537,10 @@ function maintain_stacks() {
     child_branch=$(jq -r '.child_branch // empty' "$sf")
     oldbase=$(jq -r '.last_parent_sha // empty' "$sf")
     { [ -z "$parent_branch" ] || [ -z "$child_branch" ] || [ -z "$oldbase" ]; } && continue
-    branch_checked_out_elsewhere "$child_branch" && continue  # you're collaborating in it
+    # Skip only if a *foreign* worktree holds the branch (a human is collaborating). Deputy's own
+    # kept worktree is fine — resync_stack rebases in place there.
+    local cwt; cwt=$(worktree_for_branch "$child_branch")
+    { [ -n "$cwt" ] && [[ "$cwt" != "${AUTOMATION_BASE_DIR}_"* ]]; } && continue
 
     # Child PR gone/merged -> stack is done.
     local child_open; child_open=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$child_branch" --state open --json number --jq 'length' 2>/dev/null)
@@ -689,7 +705,7 @@ function process_ticket() {
   local ask_file="/tmp/deputy-ask-${ticket_id}.txt"
   local session_file; session_file=$(session_file_for "$ticket_id")  # durable: survives reboot
   local blocked_meta="/tmp/deputy-blocked-${ticket_id}.meta"
-  local stack_file="/tmp/deputy-stack-${ticket_id}.json"
+  local stack_file; stack_file=$(stack_record "$ticket_id"); mkdir -p "$STACKS_DIR"
 
   # --- Dependency gate (stacked PRs) -------------------------------------------
   # Decide the base BEFORE marking started, so a blocked ticket keeps its label and
@@ -779,9 +795,11 @@ function process_ticket() {
     setup_worktree "$ticket_worktree" "$log_file"
   fi
 
-  local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
-  local pr_ref;   pr_ref=$(node "$TRACKER_CLI" ref "$ticket_id" 2>/dev/null)
+  local item_url;   item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
+  local item_title; item_title=$(node "$TRACKER_CLI" title "$ticket_id" 2>/dev/null)
+  local pr_ref;     pr_ref=$(node "$TRACKER_CLI" ref "$ticket_id" 2>/dev/null)
   [ -n "$item_url" ] && echo "[$(date)] ITEM_URL: $item_url" >> "$log_file"
+  [ -n "$item_title" ] && echo "[$(date)] ITEM_TITLE: $item_title" >> "$log_file"
   echo "[$(date)] WORKTREE: $ticket_worktree" >> "$log_file"
 
   # When stacked, the PR must target the parent's branch (not main) so its diff is just our changes.
@@ -1078,7 +1096,7 @@ function stop_ticket() {
   # Clear only the transient in-flight markers; keep the durable journal + session + worktree.
   rm -f "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta" \
         "/tmp/deputy-blocked-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.txt" \
-        "/tmp/deputy-stack-${ticket_id}.json" "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt"
+        "$(stack_record "$ticket_id")" "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt"
 
   if [ -f "$(journal_file "$ticket_id")" ]; then
     set_journal_status "$ticket_id" stopped
@@ -1098,7 +1116,7 @@ function forget_ticket() {
   done
   rm -f "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta" \
         "/tmp/deputy-blocked-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.txt" \
-        "/tmp/deputy-stack-${ticket_id}.json" "/tmp/deputy-failed-${ticket_id}.meta" \
+        "$(stack_record "$ticket_id")" "/tmp/deputy-failed-${ticket_id}.meta" \
         "/tmp/deputy-failed-${ticket_id}.txt" "/tmp/deputy-stopped-${ticket_id}.meta" "/tmp/deputy-item-${ticket_id}.meta"
   clear_journal "$ticket_id"
   local wt="${AUTOMATION_BASE_DIR}_${ticket_id}"
