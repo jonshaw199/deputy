@@ -938,7 +938,9 @@ Work autonomously. When done, report the PR URL."
   # merges or closes (see prune_merged_worktrees).
   echo "[$(date)] Done. Worktree kept for local testing at $ticket_worktree." >> "$log_file"
   prepare_worktree_for_testing "$ticket_worktree" "$log_file"
-  clear_journal "$ticket_id"   # done + PR up: nothing to resume
+  # Keep the journal + SDK session (status=done) so a follow-up chat resumes this agent warm
+  # instead of starting cold; both are cleared when the PR merges/closes (prune_merged_worktrees).
+  set_journal_status "$ticket_id" done
   rm -f "$lock_file"
 }
 
@@ -979,11 +981,15 @@ function resume_ticket() {
     echo "[$(date)] Resuming $ticket_id with your answer" >> "$log_file"
     echo "[YOU] $reply" >> "$log_file"
     echo "⏳ Reconnecting to the agent..." >> "$log_file"
-    prompt="The user replied to your question: $reply
+    prompt="The user sent you a message:
 
-If that reply actually answers what you asked, proceed and finish the work (implement, test,
-commit, push, open or update the draft PR, and mark the item done). If it does NOT answer your
-question or is unclear, call mcp__deputy__ask_user again to clarify instead of guessing."
+$reply
+
+Treat it as guidance for this work. If it answers a question you were waiting on, proceed and
+finish (implement, test, commit, push, open or update the PR). If it asks for a change, do it
+(edit, test, commit, push, update the PR). If it's just a question about the work, answer it.
+Only call mcp__deputy__ask_user if you genuinely cannot proceed or need a decision; otherwise
+act and report back. Do NOT redo work that is already committed."
   fi
 
   run_agent "$ticket_worktree" "$prompt" "$log_file" "$input_file" "$ask_file" "$session_file" "$session"
@@ -1020,7 +1026,7 @@ question or is unclear, call mcp__deputy__ask_user again to clarify instead of g
 
   echo "[$(date)] SUCCESS: $ticket_id (resumed). Worktree kept for local testing at $ticket_worktree." >> "$DAEMON_LOG_FILE"
   prepare_worktree_for_testing "$ticket_worktree" "$log_file"
-  clear_journal "$ticket_id"   # worktree is pruned later when the PR merges/closes
+  set_journal_status "$ticket_id" done   # keep session warm for follow-up chat; cleared on PR merge/close
   trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
 }
 

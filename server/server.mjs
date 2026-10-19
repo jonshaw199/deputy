@@ -5,7 +5,7 @@
 // shells out to bin/daemon for start/stop.
 import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, appendFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
-import { join, dirname, extname } from 'node:path';
+import { join, dirname, extname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 
@@ -105,6 +105,15 @@ export function makeServer(opts = {}) {
   // The ticket title (ITEM_TITLE), always read from the FULL base log — it's written once near
   // the top, so a bounded tail or an active continuation's log would miss it.
   const caseTitle = (ticket) => titleIn(tail(join(TMP, `deputy-item-${ticket}.log`), Infinity));
+
+  // A ticket whose SDK session still exists can be resumed WARM (remembers its context) instead
+  // of restarted cold. Returns the owning project, or null. Session lives in <repo>_deputy/cases.
+  const resumable = (ticket) => {
+    for (const repoDir of REPOS) {
+      if (existsSync(join(`${repoDir}_deputy`, 'cases', `${ticket}.session`))) return basename(repoDir);
+    }
+    return null;
+  };
 
   function listDaemons() {
     return readdirSync(TMP)
@@ -280,11 +289,18 @@ export function makeServer(opts = {}) {
       const { project, ticket, prompt, branch } = await readBody(req);
       if (!listDaemons().some((d) => d.project === project)) return json(res, 400, { error: 'unknown daemon' });
       if (!ticket || !prompt) return json(res, 400, { error: 'ticket and prompt required' });
-      const line = JSON.stringify({ ticket, prompt, branch, id: `web-${ticket}-${Date.now()}` });
+      // Fastest first: a live agent streams the message in place. Else resume its warm session
+      // (remembers the ticket/PR). Only a session-less case falls back to a cold one-shot.
+      if (listActive().some((a) => a.ticket === ticket)) {
+        appendFileSync(join(TMP, `deputy-input-${ticket}.jsonl`), prompt + '\n');
+        return json(res, 200, { ok: true, streamed: true });
+      }
+      const kind = resumable(ticket) ? 'resume' : 'continue';
+      const line = JSON.stringify({ ticket, prompt, branch, kind, id: `web-${ticket}-${Date.now()}` });
       appendFileSync(join(TMP, `deputy-queue-${project}.jsonl`), line + '\n');
       // Nudge the daemon to drain the queue now instead of waiting for the poll.
       try { process.kill(Number(tail(join(TMP, `deputy-${project}.pid`)).trim()), 'SIGUSR1'); } catch {}
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, resumed: kind === 'resume' });
     }
     if (path === '/api/stop-case' && req.method === 'POST') {
       // Call off one in-flight case (runs `daemon stop-ticket <ticket>` in its repo).
@@ -336,6 +352,14 @@ export function makeServer(opts = {}) {
       if (listActive().some((a) => a.ticket === ticket)) {
         appendFileSync(join(TMP, `deputy-input-${ticket}.jsonl`), message + '\n');
         return json(res, 200, { ok: true });
+      }
+      // Agent finished but its session is kept: resume it warm instead of losing the message.
+      const proj = resumable(ticket);
+      if (proj) {
+        const line = JSON.stringify({ ticket, prompt: message, kind: 'resume', id: `web-${ticket}-${Date.now()}` });
+        appendFileSync(join(TMP, `deputy-queue-${proj}.jsonl`), line + '\n');
+        try { process.kill(Number(tail(join(TMP, `deputy-${proj}.pid`)).trim()), 'SIGUSR1'); } catch {}
+        return json(res, 200, { ok: true, resumed: true });
       }
       return json(res, 400, { error: 'no live or parked agent for that ticket' });
     }
