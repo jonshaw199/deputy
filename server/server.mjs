@@ -64,7 +64,6 @@ export function makeServer(opts = {}) {
   const TMP = opts.tmp ?? cfg('DEPUTY_TMP', '/tmp');
   const PORT = opts.port ?? Number(cfg('DEPUTY_DASHBOARD_PORT', '4319'));
   const SITE_URL = opts.siteUrl ?? cfg('DEPUTY_SITE_URL', '');
-  const RUN_CMD = opts.runCmd ?? cfg('DEPUTY_RUN_CMD', '');
   const REPOS = opts.repos ?? (cfg('DEPUTY_REPOS', '') || '').split(',').map((s) => s.trim()).filter(Boolean);
   const daemonBin = opts.daemonBin ?? DAEMON_BIN;
 
@@ -92,11 +91,13 @@ export function makeServer(opts = {}) {
     return p && existsSync(p) ? p : null;
   };
 
-  // Whether the kept worktree has finished its background test-setup (DEPUTY_TEST_SETUP)
-  // and is ready to run locally. null when there's no test-setup step configured.
+  // Readiness of a kept worktree's background test-setup: true once TEST-READY lands,
+  // false only while prep is actually underway, null when no prep ran (so we never
+  // show a misleading "preparing…" on cases that predate the feature or skipped setup).
   const caseReady = (ticket) => {
-    if (!RUN_CMD && !caseWorktree(ticket)) return null;
-    const p = runReadyIn(tail(join(TMP, `deputy-item-${ticket}.log`), Infinity));
+    const log = tail(join(TMP, `deputy-item-${ticket}.log`), Infinity);
+    if (!/Preparing worktree for local testing/.test(log)) return null;
+    const p = runReadyIn(log);
     return !!(p && existsSync(p));
   };
 
@@ -250,7 +251,7 @@ export function makeServer(opts = {}) {
       for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), blocked.filter((b) => b.project === d.project), failed.filter((f) => f.project === d.project), stopped.filter((s) => s.project === d.project), d.project);
       const orphans = live.filter((a) => !daemons.some((d) => d.project === a.project))
         .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working', auto: isAuto(a.ticket) }));
-      return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL, runCmd: RUN_CMD });
+      return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
     }
     if (path === '/api/log') {
       const ticket = url.searchParams.get('ticket');

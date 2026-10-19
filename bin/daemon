@@ -29,7 +29,6 @@ source "$PROJECT_ROOT/config.sh"
 #   DEPUTY_SYMLINK_FILES - gitignored files to symlink from the main repo into each worktree
 #   DEPUTY_TEST_SETUP    - heavier setup to make a kept worktree runnable (e.g. a full build); run
 #                          in the background after a case finishes so you can cd in and test the PR
-#   DEPUTY_RUN_CMD       - how you start the app locally (e.g. "overmind s"); shown in the dashboard
 AGENT_CMD="${DEPUTY_AGENT_CMD:-node \"$RUNNER_PATH\"}"
 WORKTREE_SETUP="${DEPUTY_WORKTREE_SETUP:-}"
 TEST_SETUP="${DEPUTY_TEST_SETUP:-}"

@@ -3,7 +3,6 @@ const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls)
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const trunc = (s, n) => { s = String(s || ''); return s.length <= n ? esc(s) : esc(s.slice(0, n).replace(/\s+\S*$/, '')) + '…'; };
 let siteUrl = '';
-let runCmd = '';
 const linkTickets = (s) => esc(String(s || '')).replace(/\b([A-Z][A-Z0-9]+-\d+)\b/g, (k) => siteUrl ? `<a href="${siteUrl}/browse/${k}" target="_blank">${k}</a>` : k);
 // Revolver silhouette (cylinder + barrel + grip); emoji 🔫 renders as a toy water gun on macOS.
 const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="9" y="6.4" width="12" height="2.6" rx=".5"/><circle cx="8" cy="9.6" r="3.3"/><path d="M7 12.4l-1.5 5.1a1 1 0 0 0 1 1.3h2a1 1 0 0 0 1-.75L11 12.4z"/><rect x="18.6" y="5" width="2.4" height="2" rx=".3"/></svg>';
@@ -162,7 +161,6 @@ async function refresh() {
   try {
     const s = await api('/api/status');
     siteUrl = s.siteUrl || '';
-    runCmd = s.runCmd || '';
     const running = s.daemons.filter((d) => d.running).length;
     const allCases = [...s.daemons.flatMap((d) => d.cases || []), ...(s.orphans || [])];
     const open = allCases.length;
