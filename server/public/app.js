@@ -240,7 +240,7 @@ function renderDetails(target) {
     const prepping = target.ready === false ? ' <span class="muted">(preparing…)</span>' : '';
     meta.push(`<div class="meta-row"><span>worktree</span><span class="path">${esc(target.worktree)}${prepping}</span></div>`);
   }
-  const openCode = target.worktree ? `<button class="ghost" data-open-code style="margin-top:10px">Open in Claude Code ↗</button>` : '';
+  const openCode = target.worktree ? `<button class="ghost" data-open-code style="margin-top:10px;padding:3px 9px;font-size:12px">Open in editor ↗</button>` : '';
   const s = [`<div class="detail"><h4>Case</h4>${meta.join('')}${openCode}</div>`];
   if (target.needsInput) s.push(`<div class="detail"><h4>Needs your call</h4><div>${esc(target.question || target.phase || '')}</div></div>`);
   if (target.blocked) s.push(`<div class="detail"><h4>Blocked</h4><div>${linkTickets(target.phase)}</div><div class="muted">Starts once its dependency has a branch.</div></div>`);

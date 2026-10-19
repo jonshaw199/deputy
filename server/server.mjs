@@ -66,6 +66,7 @@ export function makeServer(opts = {}) {
   const PORT = opts.port ?? Number(cfg('DEPUTY_DASHBOARD_PORT', '4319'));
   const SITE_URL = opts.siteUrl ?? cfg('DEPUTY_SITE_URL', '');
   const REPOS = opts.repos ?? (cfg('DEPUTY_REPOS', '') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const OPEN_CMD = opts.openCmd ?? cfg('DEPUTY_OPEN_CMD', ''); // agent-agnostic "open in editor" handoff; empty = Claude Code default
   const daemonBin = opts.daemonBin ?? DAEMON_BIN;
 
   const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -377,13 +378,20 @@ export function makeServer(opts = {}) {
         const repoDir = REPOS.find((r) => basename(r) === proj);
         try { session = readFileSync(join(`${repoDir}_deputy`, 'cases', `${ticket}.session`), 'utf8').trim(); } catch {}
       }
-      const uri = session
-        ? `vscode://anthropic.claude-code/open?session=${encodeURIComponent(session)}`
-        : 'vscode://anthropic.claude-code/open';
-      const openClaude = () => setTimeout(() => execFile('open', [uri], () => {}), 1200);
-      execFile('code', ['-n', wt], (err) => err
-        ? execFile('open', ['-a', 'Visual Studio Code', wt], () => openClaude())
-        : openClaude());
+      if (OPEN_CMD) {
+        // Agent-agnostic handoff: the user's command gets the worktree + session via env,
+        // so a non-Claude setup (opencode, etc.) can open + resume however it needs to.
+        execFile('sh', ['-c', OPEN_CMD], { env: { ...process.env, DEPUTY_WORKTREE: wt, DEPUTY_SESSION: session } }, () => {});
+      } else {
+        // Default: open the folder in VS Code, then resume the Claude Code session.
+        const uri = session
+          ? `vscode://anthropic.claude-code/open?session=${encodeURIComponent(session)}`
+          : 'vscode://anthropic.claude-code/open';
+        const openClaude = () => setTimeout(() => execFile('open', [uri], () => {}), 1200);
+        execFile('code', ['-n', wt], (err) => err
+          ? execFile('open', ['-a', 'Visual Studio Code', wt], () => openClaude())
+          : openClaude());
+      }
       return json(res, 200, { ok: true, resumedSession: !!session });
     }
 

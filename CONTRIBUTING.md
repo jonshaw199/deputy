@@ -160,6 +160,48 @@ the agent, and the dashboard are all tracker-agnostic. See
 [`github-issues.mjs`](lib/trackers/github-issues.mjs) for reference, and add a
 `test/trackers-<name>.test.mjs` modeled on the existing ones.
 
+## Swapping the agent (runner protocol)
+
+The daemon never calls Claude directly — it runs `DEPUTY_AGENT_CMD` in the worktree and
+talks to it only through environment variables, a few files, and stdout. All Claude-specific
+code lives in one place, [`lib/claude-agent-runner.mjs`](lib/claude-agent-runner.mjs); it's
+just the default. Any command that speaks the contract below can replace it.
+
+**What the runner reads** (environment):
+
+- `DEPUTY_PROMPT` — the task. The runner runs in the worktree (its cwd), implements, commits,
+  pushes, and opens the draft PR.
+- `DEPUTY_GITHUB_TOKEN` — passed through for `gh`.
+- *(optional, for the premium features)* `DEPUTY_INPUT` — a file to tail for live follow-up
+  messages (one per line); `DEPUTY_SESSION_FILE` — write your agent's session handle here;
+  `DEPUTY_RESUME` — resume that handle instead of starting fresh; `DEPUTY_ASK_FILE` — write a
+  question here and exit to "park" the case for the human.
+
+**What the runner writes:**
+
+- Everything to **stdout** — that's the dashboard log.
+- The **PR url** somewhere in stdout (the daemon greps `github.com/<owner>/<repo>/pull/<n>`).
+- Its **session id** to `DEPUTY_SESSION_FILE` — enables warm resume + the editor handoff.
+
+**Graceful degradation.** A bare command that just does prompt → PR works. The premium
+features — live chat, park-and-ask, warm resume — are *protocol features*: a runner that
+implements the file contract above gets them; one that doesn't still ships PRs.
+
+**Tracker access.** The default runner exposes the tracker as an in-process MCP server
+(`mcp__tracker__get_item` / `finish`). A different agent can register the same tracker via its
+own MCP config, or read the ticket from `DEPUTY_PROMPT` (the item URL is always included).
+
+**Editor handoff.** The dashboard's "Open in editor" button runs `DEPUTY_OPEN_CMD` with
+`$DEPUTY_WORKTREE` + `$DEPUTY_SESSION` in the environment (default: open the folder in VS Code
+and resume the Claude Code session). Set it to match your agent.
+
+**Example — opencode.** Point `DEPUTY_AGENT_CMD` at a wrapper that runs
+`opencode run "$DEPUTY_PROMPT" --format json` (with stdin closed), parses `sessionID` from the
+JSON stream into `DEPUTY_SESSION_FILE`, and on `DEPUTY_RESUME` runs `opencode run -s <id>`.
+Register the tracker under the `mcp` key in `opencode.json`. `DEPUTY_OPEN_CMD` opens the folder
+in VS Code (opencode has no session deep-link URI). Live mid-run chat and park-and-ask would
+need opencode's HTTP server (`opencode serve`) rather than the one-shot `run`.
+
 ## Tests
 
 ```bash
