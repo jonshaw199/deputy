@@ -282,11 +282,15 @@ $('#logReply').onsubmit = async (e) => {
       prompt = prCommentsPrompt(p, '');
     }
     inp.value = '';
+    // Echo your message right away (kept until it shows up in the activity log), like live chat.
+    pendingEcho = message || '(address all comments)';
+    $('#logBody').textContent += `\n[YOU] ${pendingEcho}\n`;
+    $('#logBody').scrollTop = $('#logBody').scrollHeight;
     btn.disabled = true; const label = btn.textContent; btn.textContent = 'Sending…';
     const r = await api('/api/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: logTarget.project, ticket: p.ticket || `PR-${p.number}`, branch: p.branch, prompt }) });
     btn.disabled = false; btn.textContent = label;
-    if (r.error) { inp.value = message; alert(r.error); }
-    else { pendingEcho = `[SENT] Deputy is on it — it'll show as a working case here.`; refreshLog(); }
+    if (r.error) { pendingEcho = ''; inp.value = message; alert(r.error); }
+    else { refreshLog(); }
     return;
   }
 
