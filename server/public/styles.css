@@ -1,7 +1,7 @@
 :root {
   --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
   --text: #e6e9ef; --muted: #8b93a3; --accent: #5b9dff;
-  --ok: #5b9dff; --fail: #f85149; --warn: #d29922; --busy: #3fb950;
+  --ok: #3fb950; --fail: #f85149; --warn: #d29922; --busy: #5b9dff;
 }
 * { box-sizing: border-box; }
 body {
