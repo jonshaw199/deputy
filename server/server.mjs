@@ -51,6 +51,7 @@ export const lastMeaningful = (text) => {
 };
 export const prUrlIn = (text) => { const m = text.match(/https:\/\/github\.com\/[^\s"']+\/pull\/\d+/g); return m ? m[m.length - 1] : null; };
 export const itemUrlIn = (text) => { const m = text.match(/ITEM_URL: (\S+)/g); return m ? m[m.length - 1].replace('ITEM_URL: ', '') : null; };
+export const worktreeIn = (text) => { const m = text.match(/WORKTREE: (\S+)/g); return m ? m[m.length - 1].replace('WORKTREE: ', '') : null; };
 
 // Build the HTTP server with its config injected, so tests can point it at a
 // temp state dir / repo allowlist instead of the real /tmp. Nothing listens
@@ -83,6 +84,12 @@ export function makeServer(opts = {}) {
     return joined.length > n ? joined.slice(-n) : joined;
   }
 
+  // The case's worktree path — only if it still exists on disk (finished cases are cleaned up).
+  const caseWorktree = (ticket) => {
+    const p = worktreeIn(tail(join(TMP, `deputy-item-${ticket}.log`), Infinity));
+    return p && existsSync(p) ? p : null;
+  };
+
   function listDaemons() {
     return readdirSync(TMP)
       .map((f) => f.match(/^deputy-(.+)\.pid$/))
@@ -110,7 +117,7 @@ export function makeServer(opts = {}) {
         const log = tail(logPath);
         const full = tail(logPath, Infinity); // ITEM_URL/PR are written once near the top
         const project = tail(join(TMP, `deputy-item-${raw}.meta`)).trim() || null;
-        return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(full), item: itemUrlIn(full), needsInput: false };
+        return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(full), item: itemUrlIn(full), worktree: caseWorktree(ticket), needsInput: false };
       });
   }
 
@@ -153,7 +160,7 @@ export function makeServer(opts = {}) {
         const reason = tail(join(TMP, `deputy-failed-${ticket}.txt`)).trim() || 'the run failed';
         const log = tail(join(TMP, `deputy-item-${ticket}.log`), Infinity);
         const project = tail(join(TMP, `deputy-failed-${ticket}.meta`)).trim() || null;
-        return { ticket, project, state: 'failed', phase: reason, item: itemUrlIn(log), pr: prUrlIn(log) };
+        return { ticket, project, state: 'failed', phase: reason, item: itemUrlIn(log), pr: prUrlIn(log), worktree: caseWorktree(ticket) };
       });
   }
   // Cases the user stopped (✕) but kept — re-runnable with ▶. Shown as muted "stopped" cards.
@@ -165,7 +172,7 @@ export function makeServer(opts = {}) {
         const ticket = m[1];
         const log = tail(join(TMP, `deputy-item-${ticket}.log`), Infinity);
         const project = tail(join(TMP, `deputy-stopped-${ticket}.meta`)).trim() || null;
-        return { ticket, project, state: 'stopped', phase: 'stopped by you', item: itemUrlIn(log), pr: prUrlIn(log) };
+        return { ticket, project, state: 'stopped', phase: 'stopped by you', item: itemUrlIn(log), pr: prUrlIn(log), worktree: caseWorktree(ticket) };
       });
   }
   // Open PRs + unresolved review comments the daemon published (deputy never replies).

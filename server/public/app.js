@@ -27,7 +27,7 @@ function badge(outcome) {
 // Clicking opens the live chat for a live agent, or the PR's review comments in-review.
 function openCaseModal(c) {
   openLog({
-    ticket: c.ticket, state: c.state, project: c.project, item: c.item, phase: c.phase, question: c.question,
+    ticket: c.ticket, state: c.state, project: c.project, item: c.item, phase: c.phase, question: c.question, worktree: c.worktree,
     live: c.state === 'working' || c.state === 'needs-input',
     needsInput: c.state === 'needs-input', blocked: c.state === 'blocked', failed: c.state === 'failed', stopped: c.state === 'stopped',
     pr: c.pr ? { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] } : null,
@@ -236,6 +236,7 @@ function renderDetails(target) {
       meta.push(`<div class="meta-row"><span>branch</span><a href="${repoBase}/tree/${encodeURIComponent(target.pr.branch)}" target="_blank">${esc(target.pr.branch)}</a></div>`);
     }
   }
+  if (target.worktree) meta.push(`<div class="meta-row"><span>worktree</span><span class="path">${esc(target.worktree)}</span></div>`);
   const s = [`<div class="detail"><h4>Case</h4>${meta.join('')}</div>`];
   if (target.needsInput) s.push(`<div class="detail"><h4>Needs your call</h4><div>${esc(target.question || target.phase || '')}</div></div>`);
   if (target.blocked) s.push(`<div class="detail"><h4>Blocked</h4><div>${linkTickets(target.phase)}</div><div class="muted">Starts once its dependency has a branch.</div></div>`);

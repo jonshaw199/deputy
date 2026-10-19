@@ -98,6 +98,7 @@ button:hover { border-color: var(--accent); }
 .detail .cmt { margin: 0 0 10px; }
 .detail .cmt .who { color: var(--text); } .detail .cmt .loc { color: var(--muted); font-size: 12px; }
 .detail .meta-row { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); padding: 2px 0; }
+.detail .meta-row .path { color: var(--text); font-size: 11px; word-break: break-all; text-align: right; }
 .detail .err { color: var(--text); padding: 8px 10px; border-left: 3px solid var(--fail); background: rgba(248,81,73,.08); border-radius: 6px; white-space: pre-wrap; font: 12px/1.5 "SF Mono", Menlo, monospace; }
 .statepill { display: inline-block; font-size: 11px; padding: 1px 9px; border-radius: 999px; border: 1px solid var(--border); }
 @media (max-width: 760px) {

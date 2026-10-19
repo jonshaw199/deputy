@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lastMeaningful, prUrlIn, itemUrlIn, parseEnvFile } from '../server/server.mjs';
+import { lastMeaningful, prUrlIn, itemUrlIn, worktreeIn, parseEnvFile } from '../server/server.mjs';
 
 test('lastMeaningful returns the agent last words, stripping the [ASSISTANT] tag', () => {
   const log = '[RUNNER] started\n[ASSISTANT] Draft PR is up\n============\n[RESULT] success\n';
@@ -42,6 +42,11 @@ test('prUrlIn finds the last PR url and is null when absent', () => {
 test('itemUrlIn extracts an ITEM_URL marker and is null when absent', () => {
   assert.equal(itemUrlIn('x\nITEM_URL: https://acme.atlassian.net/browse/WEB-1\n'), 'https://acme.atlassian.net/browse/WEB-1');
   assert.equal(itemUrlIn('nothing'), null);
+});
+
+test('worktreeIn extracts the WORKTREE path and is null when absent', () => {
+  assert.equal(worktreeIn('a\nWORKTREE: /Users/you/code/app_deputy_WEB-1\nb'), '/Users/you/code/app_deputy_WEB-1');
+  assert.equal(worktreeIn('no marker'), null);
 });
 
 test('parseEnvFile strips quotes, trims, and ignores comments/blanks', () => {

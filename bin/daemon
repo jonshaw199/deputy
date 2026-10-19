@@ -743,6 +743,7 @@ function process_ticket() {
   local item_url; item_url=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
   local pr_ref;   pr_ref=$(node "$TRACKER_CLI" ref "$ticket_id" 2>/dev/null)
   [ -n "$item_url" ] && echo "[$(date)] ITEM_URL: $item_url" >> "$log_file"
+  echo "[$(date)] WORKTREE: $ticket_worktree" >> "$log_file"
 
   # When stacked, the PR must target the parent's branch (not main) so its diff is just our changes.
   local pr_base_flag="" stack_note=""
