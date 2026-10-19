@@ -52,6 +52,7 @@ export const lastMeaningful = (text) => {
 export const prUrlIn = (text) => { const m = text.match(/https:\/\/github\.com\/[^\s"']+\/pull\/\d+/g); return m ? m[m.length - 1] : null; };
 export const itemUrlIn = (text) => { const m = text.match(/ITEM_URL: (\S+)/g); return m ? m[m.length - 1].replace('ITEM_URL: ', '') : null; };
 export const worktreeIn = (text) => { const m = text.match(/WORKTREE: (\S+)/g); return m ? m[m.length - 1].replace('WORKTREE: ', '') : null; };
+export const runReadyIn = (text) => { const m = text.match(/TEST-READY: (\S+)/g); return m ? m[m.length - 1].replace('TEST-READY: ', '') : null; };
 
 // Build the HTTP server with its config injected, so tests can point it at a
 // temp state dir / repo allowlist instead of the real /tmp. Nothing listens
@@ -63,6 +64,7 @@ export function makeServer(opts = {}) {
   const TMP = opts.tmp ?? cfg('DEPUTY_TMP', '/tmp');
   const PORT = opts.port ?? Number(cfg('DEPUTY_DASHBOARD_PORT', '4319'));
   const SITE_URL = opts.siteUrl ?? cfg('DEPUTY_SITE_URL', '');
+  const RUN_CMD = opts.runCmd ?? cfg('DEPUTY_RUN_CMD', '');
   const REPOS = opts.repos ?? (cfg('DEPUTY_REPOS', '') || '').split(',').map((s) => s.trim()).filter(Boolean);
   const daemonBin = opts.daemonBin ?? DAEMON_BIN;
 
@@ -88,6 +90,14 @@ export function makeServer(opts = {}) {
   const caseWorktree = (ticket) => {
     const p = worktreeIn(tail(join(TMP, `deputy-item-${ticket}.log`), Infinity));
     return p && existsSync(p) ? p : null;
+  };
+
+  // Whether the kept worktree has finished its background test-setup (DEPUTY_TEST_SETUP)
+  // and is ready to run locally. null when there's no test-setup step configured.
+  const caseReady = (ticket) => {
+    if (!RUN_CMD && !caseWorktree(ticket)) return null;
+    const p = runReadyIn(tail(join(TMP, `deputy-item-${ticket}.log`), Infinity));
+    return !!(p && existsSync(p));
   };
 
   function listDaemons() {
@@ -117,7 +127,7 @@ export function makeServer(opts = {}) {
         const log = tail(logPath);
         const full = tail(logPath, Infinity); // ITEM_URL/PR are written once near the top
         const project = tail(join(TMP, `deputy-item-${raw}.meta`)).trim() || null;
-        return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(full), item: itemUrlIn(full), worktree: caseWorktree(ticket), needsInput: false };
+        return { ticket, project, phase: lastMeaningful(log), pr: prUrlIn(full), item: itemUrlIn(full), worktree: caseWorktree(ticket), ready: caseReady(ticket), needsInput: false };
       });
   }
 
@@ -160,7 +170,7 @@ export function makeServer(opts = {}) {
         const reason = tail(join(TMP, `deputy-failed-${ticket}.txt`)).trim() || 'the run failed';
         const log = tail(join(TMP, `deputy-item-${ticket}.log`), Infinity);
         const project = tail(join(TMP, `deputy-failed-${ticket}.meta`)).trim() || null;
-        return { ticket, project, state: 'failed', phase: reason, item: itemUrlIn(log), pr: prUrlIn(log), worktree: caseWorktree(ticket) };
+        return { ticket, project, state: 'failed', phase: reason, item: itemUrlIn(log), pr: prUrlIn(log), worktree: caseWorktree(ticket), ready: caseReady(ticket) };
       });
   }
   // Cases the user stopped (✕) but kept — re-runnable with ▶. Shown as muted "stopped" cards.
@@ -172,7 +182,7 @@ export function makeServer(opts = {}) {
         const ticket = m[1];
         const log = tail(join(TMP, `deputy-item-${ticket}.log`), Infinity);
         const project = tail(join(TMP, `deputy-stopped-${ticket}.meta`)).trim() || null;
-        return { ticket, project, state: 'stopped', phase: 'stopped by you', item: itemUrlIn(log), pr: prUrlIn(log), worktree: caseWorktree(ticket) };
+        return { ticket, project, state: 'stopped', phase: 'stopped by you', item: itemUrlIn(log), pr: prUrlIn(log), worktree: caseWorktree(ticket), ready: caseReady(ticket) };
       });
   }
   // Open PRs + unresolved review comments the daemon published (deputy never replies).
@@ -207,7 +217,7 @@ export function makeServer(opts = {}) {
       const key = p.ticket || `PR-${p.number}`;
       const ex = byTicket.get(p.ticket);
       if (ex) { ex.pr = p.url; ex.branch = p.branch; ex.comments = p.comments; ex.prNumber = p.number; if (!ex.item) ex.item = p.item; }
-      else byTicket.set(key, { ticket: key, project, state: 'in-review', title: p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item, worktree: caseWorktree(p.ticket) });
+      else byTicket.set(key, { ticket: key, project, state: 'in-review', title: p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item, worktree: caseWorktree(p.ticket), ready: caseReady(p.ticket) });
     }
     // Sort attention-first (needs-you / failed on top), then by ticket (natural order).
     const rank = { 'needs-input': 0, failed: 1, working: 2, blocked: 3, stopped: 4, 'in-review': 5 };
@@ -240,7 +250,7 @@ export function makeServer(opts = {}) {
       for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), blocked.filter((b) => b.project === d.project), failed.filter((f) => f.project === d.project), stopped.filter((s) => s.project === d.project), d.project);
       const orphans = live.filter((a) => !daemons.some((d) => d.project === a.project))
         .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working', auto: isAuto(a.ticket) }));
-      return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
+      return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL, runCmd: RUN_CMD });
     }
     if (path === '/api/log') {
       const ticket = url.searchParams.get('ticket');

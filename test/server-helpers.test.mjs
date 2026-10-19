@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lastMeaningful, prUrlIn, itemUrlIn, worktreeIn, parseEnvFile } from '../server/server.mjs';
+import { lastMeaningful, prUrlIn, itemUrlIn, worktreeIn, runReadyIn, parseEnvFile } from '../server/server.mjs';
 
 test('lastMeaningful returns the agent last words, stripping the [ASSISTANT] tag', () => {
   const log = '[RUNNER] started\n[ASSISTANT] Draft PR is up\n============\n[RESULT] success\n';
@@ -47,6 +47,11 @@ test('itemUrlIn extracts an ITEM_URL marker and is null when absent', () => {
 test('worktreeIn extracts the WORKTREE path and is null when absent', () => {
   assert.equal(worktreeIn('a\nWORKTREE: /Users/you/code/app_deputy_WEB-1\nb'), '/Users/you/code/app_deputy_WEB-1');
   assert.equal(worktreeIn('no marker'), null);
+});
+
+test('runReadyIn extracts the TEST-READY path and is null when absent', () => {
+  assert.equal(runReadyIn('setup\nTEST-READY: /Users/you/code/app_deputy_WEB-1\ndone'), '/Users/you/code/app_deputy_WEB-1');
+  assert.equal(runReadyIn('still preparing'), null);
 });
 
 test('parseEnvFile strips quotes, trims, and ignores comments/blanks', () => {

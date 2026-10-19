@@ -3,6 +3,7 @@ const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls)
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const trunc = (s, n) => { s = String(s || ''); return s.length <= n ? esc(s) : esc(s.slice(0, n).replace(/\s+\S*$/, '')) + '…'; };
 let siteUrl = '';
+let runCmd = '';
 const linkTickets = (s) => esc(String(s || '')).replace(/\b([A-Z][A-Z0-9]+-\d+)\b/g, (k) => siteUrl ? `<a href="${siteUrl}/browse/${k}" target="_blank">${k}</a>` : k);
 // Revolver silhouette (cylinder + barrel + grip); emoji 🔫 renders as a toy water gun on macOS.
 const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="9" y="6.4" width="12" height="2.6" rx=".5"/><circle cx="8" cy="9.6" r="3.3"/><path d="M7 12.4l-1.5 5.1a1 1 0 0 0 1 1.3h2a1 1 0 0 0 1-.75L11 12.4z"/><rect x="18.6" y="5" width="2.4" height="2" rx=".3"/></svg>';
@@ -27,7 +28,7 @@ function badge(outcome) {
 // Clicking opens the live chat for a live agent, or the PR's review comments in-review.
 function openCaseModal(c) {
   openLog({
-    ticket: c.ticket, state: c.state, project: c.project, item: c.item, phase: c.phase, question: c.question, worktree: c.worktree,
+    ticket: c.ticket, state: c.state, project: c.project, item: c.item, phase: c.phase, question: c.question, worktree: c.worktree, ready: c.ready,
     live: c.state === 'working' || c.state === 'needs-input',
     needsInput: c.state === 'needs-input', blocked: c.state === 'blocked', failed: c.state === 'failed', stopped: c.state === 'stopped',
     pr: c.pr ? { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] } : null,
@@ -161,6 +162,7 @@ async function refresh() {
   try {
     const s = await api('/api/status');
     siteUrl = s.siteUrl || '';
+    runCmd = s.runCmd || '';
     const running = s.daemons.filter((d) => d.running).length;
     const allCases = [...s.daemons.flatMap((d) => d.cases || []), ...(s.orphans || [])];
     const open = allCases.length;
@@ -236,7 +238,10 @@ function renderDetails(target) {
       meta.push(`<div class="meta-row"><span>branch</span><a href="${repoBase}/tree/${encodeURIComponent(target.pr.branch)}" target="_blank">${esc(target.pr.branch)}</a></div>`);
     }
   }
-  if (target.worktree) meta.push(`<div class="meta-row"><span>worktree</span><span class="path">${esc(target.worktree)}</span></div>`);
+  if (target.worktree) {
+    const prepping = target.ready === false ? ' <span class="muted">(preparing…)</span>' : '';
+    meta.push(`<div class="meta-row"><span>worktree</span><span class="path">${esc(target.worktree)}${prepping}</span></div>`);
+  }
   const s = [`<div class="detail"><h4>Case</h4>${meta.join('')}</div>`];
   if (target.needsInput) s.push(`<div class="detail"><h4>Needs your call</h4><div>${esc(target.question || target.phase || '')}</div></div>`);
   if (target.blocked) s.push(`<div class="detail"><h4>Blocked</h4><div>${linkTickets(target.phase)}</div><div class="muted">Starts once its dependency has a branch.</div></div>`);

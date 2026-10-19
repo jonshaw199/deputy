@@ -27,8 +27,12 @@ source "$PROJECT_ROOT/config.sh"
 #   DEPUTY_AGENT_CMD     - command run in each worktree; reads the task from $DEPUTY_PROMPT
 #   DEPUTY_WORKTREE_SETUP- command run in each fresh worktree (deps install etc.); may be empty
 #   DEPUTY_SYMLINK_FILES - gitignored files to symlink from the main repo into each worktree
+#   DEPUTY_TEST_SETUP    - heavier setup to make a kept worktree runnable (e.g. a full build); run
+#                          in the background after a case finishes so you can cd in and test the PR
+#   DEPUTY_RUN_CMD       - how you start the app locally (e.g. "overmind s"); shown in the dashboard
 AGENT_CMD="${DEPUTY_AGENT_CMD:-node \"$RUNNER_PATH\"}"
 WORKTREE_SETUP="${DEPUTY_WORKTREE_SETUP:-}"
+TEST_SETUP="${DEPUTY_TEST_SETUP:-}"
 SYMLINK_FILES="${DEPUTY_SYMLINK_FILES:-.env .env.local}"
 # Command eval'd right before the agent runs (e.g. refresh cloud creds); may be empty.
 PRE_AGENT="${DEPUTY_PRE_AGENT:-}"
@@ -217,6 +221,24 @@ function setup_worktree() {
     rm -rf "$worktree/node_modules/$dep"
     ln -sf "$AUTOMATION_BASE_DIR/node_modules/$dep" "$worktree/node_modules/$dep" 2>> "$log_file" || true
   done
+}
+
+# After a case finishes, make its kept worktree runnable so you can cd in and test the PR.
+# Runs in the background (the PR is already up) and logs TEST-READY when done; the dashboard
+# watches for that line. No-op unless DEPUTY_TEST_SETUP is set.
+function prepare_worktree_for_testing() {
+  local worktree=$1 log_file=$2
+  [ -n "$TEST_SETUP" ] || return 0
+  [ -d "$worktree" ] || return 0
+  grep -q "TEST-READY: $worktree" "$log_file" 2>/dev/null && return 0  # already prepped
+  (
+    echo "[$(date)] Preparing worktree for local testing: $TEST_SETUP" >> "$log_file"
+    if (cd "$worktree" && eval "$TEST_SETUP" >> "$log_file" 2>&1); then
+      echo "[$(date)] TEST-READY: $worktree" >> "$log_file"
+    else
+      echo "[$(date)] WARN: test setup returned non-zero; worktree may not run" >> "$log_file"
+    fi
+  ) &
 }
 
 function run_agent() {
@@ -782,12 +804,13 @@ ${item_url:+**Work item:** $item_url}
 **Tasks:**
 1. Read the work item with \`mcp__tracker__get_item\` (itemId: $ticket_id).
 2. See what's already here: \`git log --oneline origin/main..HEAD\` and \`git status\`. Build on it; do NOT redo completed work, and include any uncommitted changes that clearly belong with this work.
-3. Implement anything still missing to satisfy the item.
+3. Implement anything still missing to satisfy the item, following the repo's conventions (READ \`./CLAUDE.md\`, \`./.claude/rules/\`, \`./CONTRIBUTING.md\` if present).
 4. $TEST_INSTRUCTIONS
 5. Commit any new changes and push to origin/$branch_name.
 6. If there is NOT already an open PR for this branch, create a draft PR, labelled so deputy can watch its CI:
-   - \`gh pr create --draft --label \"$PR_LABEL\"${pr_base_flag} --title \"<type>: <summary> [$ticket_id]\" ...\`${pr_ref:+
-   - Body should include: \"$pr_ref\"}
+   - \`gh pr create --draft --label \"$PR_LABEL\"${pr_base_flag} --title \"<type>: <summary> [$ticket_id]\" ...\`
+   - For the body: if the repo has a PR template (\`.github/pull_request_template.md\` or \`.github/PULL_REQUEST_TEMPLATE/\`), READ it and fill out its sections verbatim; otherwise use a short Summary + Test plan. Keep it concise.${pr_ref:+
+   - The body MUST include the work-item link: \"$pr_ref\"}
    (If a PR already exists, your push already updated it — do NOT open a second one.)
 7. Mark the work item done with \`mcp__tracker__finish\` (itemId: $ticket_id)
 
@@ -811,15 +834,16 @@ ${item_url:+**Work item:** $item_url}
 **Tasks:**
 1. Read the work item with \`mcp__tracker__get_item\` (itemId: $ticket_id) for the title, description, and comments. Use the title for the commit/PR title.
 2. You are already on a detached HEAD from main - do NOT checkout any branch yet
-3. Follow .claude/rules/ conventions (if present), CLAUDE.md, and CONTRIBUTING.md guidelines
+3. READ and follow the repo's conventions: \`./CLAUDE.md\`, \`./.claude/rules/\` (if present), and \`./CONTRIBUTING.md\` (if present)
 4. Implement the requirements from the item
 5. $TEST_INSTRUCTIONS
 6. Commit with an appropriate conventional commit type (feat/fix/refactor/etc): <type>: <summary> [$ticket_id]
 7. Create branch from current commit: git branch $branch_name
 8. Push branch to origin: git push origin $branch_name
 9. Create a draft PR with gh CLI, labelled so deputy can watch its CI:
-   - \`gh pr create --draft --label \"$PR_LABEL\"${pr_base_flag} --title \"<type>: <summary> [$ticket_id]\" ...\`${pr_ref:+
-   - Body should include: \"$pr_ref\"}
+   - \`gh pr create --draft --label \"$PR_LABEL\"${pr_base_flag} --title \"<type>: <summary> [$ticket_id]\" ...\`
+   - For the body: if the repo has a PR template (\`.github/pull_request_template.md\` or \`.github/PULL_REQUEST_TEMPLATE/\`), READ it and fill out its sections verbatim; otherwise use a short Summary + Test plan. Keep it concise.${pr_ref:+
+   - The body MUST include the work-item link: \"$pr_ref\"}
 10. Mark the work item done with \`mcp__tracker__finish\` (itemId: $ticket_id)
 
 You may receive follow-up messages while you work (via the dashboard) — treat each as
@@ -896,6 +920,7 @@ Work autonomously. When done, report the PR URL."
   # Keep the worktree so you can cd in and test the PR locally; it's pruned when the PR
   # merges or closes (see prune_merged_worktrees).
   echo "[$(date)] Done. Worktree kept for local testing at $ticket_worktree." >> "$log_file"
+  prepare_worktree_for_testing "$ticket_worktree" "$log_file"
   clear_journal "$ticket_id"   # done + PR up: nothing to resume
   rm -f "$lock_file"
 }
@@ -977,6 +1002,7 @@ question or is unclear, call mcp__deputy__ask_user again to clarify instead of g
   fi
 
   echo "[$(date)] SUCCESS: $ticket_id (resumed). Worktree kept for local testing at $ticket_worktree." >> "$DAEMON_LOG_FILE"
+  prepare_worktree_for_testing "$ticket_worktree" "$log_file"
   clear_journal "$ticket_id"   # worktree is pruned later when the PR merges/closes
   trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
 }
