@@ -135,6 +135,7 @@ export function makeServer(opts = {}) {
     return readdirSync(TMP)
       .map((f) => f.match(/^deputy-item-(.+)\.lock$/))
       .filter((m) => m && !m[1].startsWith('daemon-'))
+      .filter((m) => isAlive(Number(tail(join(TMP, `deputy-item-${m[1]}.lock`)).trim()))) // skip stale locks (crashed agent) so a case never sticks on "working"
       .map((m) => {
         const raw = m[1];
         const ticket = raw.replace(/-cont-.*$/, ''); // a continuation job folds into its base ticket

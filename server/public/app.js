@@ -8,6 +8,7 @@ const linkTickets = (s) => esc(String(s || '')).replace(/\b([A-Z][A-Z0-9]+-\d+)\
 const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="9" y="6.4" width="12" height="2.6" rx=".5"/><circle cx="8" cy="9.6" r="3.3"/><path d="M7 12.4l-1.5 5.1a1 1 0 0 0 1 1.3h2a1 1 0 0 0 1-.75L11 12.4z"/><rect x="18.6" y="5" width="2.4" height="2" rx=".3"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 const PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 5l12 7-12 7z"/></svg>';
+const STOP = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
 
 let logTarget = null; // { ticket } or { daemon } currently shown in the modal
 
@@ -62,15 +63,21 @@ function caseRow(c) {
 
   const gun = `<span class="iconbtn gun ${c.auto ? 'on' : ''}" data-auto title="Full-auto: don't ask me questions, just decide and keep going">${GUN}</span>`;
   const canRerun = failed || stopped;
-  const rerun = canRerun
+  // One reserved action slot: ▶ re-run (failed/stopped), ⏹ stop (live), or an invisible placeholder.
+  const actionIcon = canRerun
     ? `<span class="iconbtn" data-rerun title="Re-run: bring this case back (resumes where it left off if it can)">${PLAY}</span>`
+    : live
+    ? `<span class="iconbtn" data-stop title="Stop: halt the agent (keeps the worktree so you can ▶ re-run)">${STOP}</span>`
     : `<span class="iconbtn" aria-hidden="true" style="visibility:hidden">${PLAY}</span>`;
-  const xTitle = (failed || stopped) ? 'Forget: remove this case + its worktree' : blocked ? 'Drop this blocked case' : live ? 'Stop: halt the agent (keeps the worktree)' : 'Hide this finished case (comes back only if a new review comment lands)';
+  const xTitle = blocked ? 'Drop this blocked case'
+    : review ? 'Hide this finished case (comes back only if a new review comment lands)'
+    : live ? 'Forget: stop the agent and delete the case + its worktree'
+    : 'Forget: delete this case + its worktree';
   const stop = `<span class="iconbtn danger" data-x title="${xTitle}">${X_ICON}</span>`;
   const row = el('div', c.state === 'needs-input' ? 'case needs-input' : 'case');
   row.innerHTML = `
     <div class="case-head"><span class="dot ${dot}" title="${dotTitle}"></span> <b>${esc(c.ticket)}</b> ${chip}
-      <span class="case-actions">${rerun}${gun}${stop}</span></div>
+      <span class="case-actions">${actionIcon}${gun}${stop}</span></div>
     ${detail}
     ${links ? `<div class="sub">${links}</div>` : ''}`;
   row.style.cursor = 'pointer';
@@ -86,18 +93,27 @@ function caseRow(c) {
     await api('/api/rerun', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, project: c.project }) });
     refresh();
   };
+  const stopBtn = row.querySelector('[data-stop]');
+  if (stopBtn) stopBtn.onclick = async (e) => {
+    e.stopPropagation();
+    if (!confirm(`Stop ${c.ticket}? Halts the agent but keeps the worktree so you can ▶ re-run it.`)) return;
+    await api('/api/stop-case', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket }) });
+    refresh();
+  };
   row.querySelector('[data-x]').onclick = async (e) => {
     e.stopPropagation();
     if (review) {
       if (!confirm(`Hide ${c.ticket}? It's in review with nothing to do; it'll reappear only if a new review comment lands.`)) return;
       await api('/api/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, commentUrls: (c.comments || []).map((x) => x.url) }) });
-    } else if (failed || stopped) {
-      if (!confirm(`Forget ${c.ticket}? Removes its worktree and state (▶ re-run instead to keep it).`)) return;
-      await api('/api/forget', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, project: c.project }) });
-    } else {
-      const msg = blocked ? `Drop blocked case ${c.ticket}? It will no longer be tracked until it's labelled again.` : `Stop ${c.ticket}? (halts the agent; keeps the worktree so you can ▶ re-run it)`;
-      if (!confirm(msg)) return;
+    } else if (blocked) {
+      if (!confirm(`Drop blocked case ${c.ticket}? It will no longer be tracked until it's labelled again.`)) return;
       await api('/api/stop-case', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket }) });
+    } else {
+      const msg = live
+        ? `Forget ${c.ticket}? Stops the agent and deletes the case + its worktree. (Use ⏹ to just stop it.)`
+        : `Forget ${c.ticket}? Removes its worktree and state (▶ re-run instead to keep it).`;
+      if (!confirm(msg)) return;
+      await api('/api/forget', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: c.ticket, project: c.project }) });
     }
     refresh();
   };
