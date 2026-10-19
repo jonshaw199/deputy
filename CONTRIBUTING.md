@@ -195,12 +195,15 @@ own MCP config, or read the ticket from `DEPUTY_PROMPT` (the item URL is always 
 `$DEPUTY_WORKTREE` + `$DEPUTY_SESSION` in the environment (default: open the folder in VS Code
 and resume the Claude Code session). Set it to match your agent.
 
-**Example — opencode.** Point `DEPUTY_AGENT_CMD` at a wrapper that runs
-`opencode run "$DEPUTY_PROMPT" --format json` (with stdin closed), parses `sessionID` from the
-JSON stream into `DEPUTY_SESSION_FILE`, and on `DEPUTY_RESUME` runs `opencode run -s <id>`.
-Register the tracker under the `mcp` key in `opencode.json`. `DEPUTY_OPEN_CMD` opens the folder
-in VS Code (opencode has no session deep-link URI). Live mid-run chat and park-and-ask would
-need opencode's HTTP server (`opencode serve`) rather than the one-shot `run`.
+**Example — opencode.** A reference runner ships at
+[`lib/opencode-runner.mjs`](lib/opencode-runner.mjs): set
+`DEPUTY_AGENT_CMD="node /abs/path/to/lib/opencode-runner.mjs"`. It runs
+`opencode run "$DEPUTY_PROMPT" --format json` (stdin closed), captures the `ses_…` id into
+`DEPUTY_SESSION_FILE`, resumes on `DEPUTY_RESUME`, and tails `DEPUTY_INPUT` for follow-ups (each
+a sequential warm resume — opencode `run` is one-shot). Register the tracker under the `mcp` key
+in `opencode.json`; set `DEPUTY_OPEN_CMD` for the editor handoff (opencode has no session
+deep-link URI); live mid-run streaming and park-and-ask would need `opencode serve`. Built to
+opencode's documented CLI — syntax-verified, not yet live-tested against a running opencode.
 
 ## Tests
 
