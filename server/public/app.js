@@ -240,7 +240,8 @@ function renderDetails(target) {
     const prepping = target.ready === false ? ' <span class="muted">(preparing…)</span>' : '';
     meta.push(`<div class="meta-row"><span>worktree</span><span class="path">${esc(target.worktree)}${prepping}</span></div>`);
   }
-  const s = [`<div class="detail"><h4>Case</h4>${meta.join('')}</div>`];
+  const openCode = target.worktree ? `<button class="ghost" data-open-code style="margin-top:10px">Open in Claude Code ↗</button>` : '';
+  const s = [`<div class="detail"><h4>Case</h4>${meta.join('')}${openCode}</div>`];
   if (target.needsInput) s.push(`<div class="detail"><h4>Needs your call</h4><div>${esc(target.question || target.phase || '')}</div></div>`);
   if (target.blocked) s.push(`<div class="detail"><h4>Blocked</h4><div>${linkTickets(target.phase)}</div><div class="muted">Starts once its dependency has a branch.</div></div>`);
   if (target.failed) s.push(`<div class="detail"><h4>Failure</h4><div class="err">${esc(target.phase || 'the run failed')}</div><button class="ghost" data-retry style="margin-top:10px">▶ re-run</button></div>`);
@@ -256,6 +257,14 @@ function renderDetails(target) {
   d.classList.remove('hidden');
   const rb = d.querySelector('[data-retry]');
   if (rb) rb.onclick = async () => { await api('/api/rerun', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: target.ticket, project: target.project }) }); $('#logClose').click(); refresh(); };
+  const ob = d.querySelector('[data-open-code]');
+  if (ob) ob.onclick = async () => {
+    ob.disabled = true; const label = ob.textContent; ob.textContent = 'Opening…';
+    const r = await api('/api/open-in-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: target.ticket }) });
+    ob.disabled = false; ob.textContent = label;
+    if (r.error) alert(r.error);
+    else ob.textContent = r.resumedSession ? 'Opened (resuming) ✓' : 'Opened (fresh chat) ✓';
+  };
 }
 // Build the instruction for a PR follow-up, auto-attaching the unresolved comments so
 // the agent actually sees them (you don't retype). `extra` is your optional guidance.

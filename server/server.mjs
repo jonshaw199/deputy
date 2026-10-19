@@ -363,6 +363,28 @@ export function makeServer(opts = {}) {
       }
       return json(res, 400, { error: 'no live or parked agent for that ticket' });
     }
+    if (path === '/api/open-in-code' && req.method === 'POST') {
+      // Hand a case off to a real Claude Code session in VS Code: open its worktree, then the
+      // Claude tab resuming the agent's saved conversation (fresh chat if the session is gone).
+      const { ticket } = await readBody(req);
+      if (!ticket) return json(res, 400, { error: 'ticket required' });
+      const wt = caseWorktree(ticket);
+      if (!wt) return json(res, 400, { error: 'no worktree for this case to open' });
+      let session = '';
+      const proj = resumable(ticket);
+      if (proj) {
+        const repoDir = REPOS.find((r) => basename(r) === proj);
+        try { session = readFileSync(join(`${repoDir}_deputy`, 'cases', `${ticket}.session`), 'utf8').trim(); } catch {}
+      }
+      const uri = session
+        ? `vscode://anthropic.claude-code/open?session=${encodeURIComponent(session)}`
+        : 'vscode://anthropic.claude-code/open';
+      const openClaude = () => setTimeout(() => execFile('open', [uri], () => {}), 1200);
+      execFile('code', ['-n', wt], (err) => err
+        ? execFile('open', ['-a', 'Visual Studio Code', wt], () => openClaude())
+        : openClaude());
+      return json(res, 200, { ok: true, resumedSession: !!session });
+    }
 
     // Static
     const file = path === '/' ? 'index.html' : path.slice(1);
