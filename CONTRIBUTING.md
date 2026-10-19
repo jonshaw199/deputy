@@ -224,6 +224,27 @@ tail -f /tmp/deputy-item-<TICKET>.log   # a case's transcript
 npm run dashboard                        # the UI
 ```
 
+## Screenshots (docs/*.png)
+
+Taken with **headless Chrome's `--screenshot`** against the demo — no Playwright:
+
+```bash
+npm run demo &                       # seeds mock state + serves on :4320
+CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+shoot() { "$CHROME" --headless=new --hide-scrollbars --force-device-scale-factor=2 \
+  --window-size="$2" --virtual-time-budget=6000 --screenshot="docs/$1" "http://localhost:4320/$3"; }
+shoot dashboard.png   1240,880 ""
+shoot chat.png        1240,840 "?case=WEB-312"
+shoot review.png      1240,840 "?case=WEB-301"
+shoot needs-input.png 1240,840 "?case=WEB-318"
+shoot failed.png      1240,840 "?case=WEB-277"
+bin/seed-demo --stop
+```
+
+`?case=<TICKET>` deep-links open that case's modal; `--force-device-scale-factor=2` gives the
+retina/hi-res shots. Note: demo **working** cases only appear if their mock lock holds a *live*
+pid (`listActive` now filters dead-pid locks), so `bin/seed-demo` must use `alive_pid` for them.
+
 ## Gotchas (learned the hard way, keep these)
 
 - The agent must run with **`CLAUDECODE` unset** (`env -u CLAUDECODE`) or the nested
