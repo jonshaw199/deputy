@@ -10,9 +10,9 @@
 #   /path/to/deputy/bin/daemon stop-ticket <TICKET>
 #
 # Logs:
-#   tail -f /tmp/deputy-<repo>.log                     # poller + outcomes
-#   tail -f /tmp/deputy-item-<TICKET>.log              # per-ticket (streaming)
-#   tail -f /tmp/deputy-item-<TICKET>-cont-<id>.log    # continuation (streaming)
+#   tail -f ${RUNTIME_DIR}/deputy-<repo>.log                     # poller + outcomes
+#   tail -f ${RUNTIME_DIR}/deputy-item-<TICKET>.log              # per-ticket (streaming)
+#   tail -f ${RUNTIME_DIR}/deputy-item-<TICKET>-cont-<id>.log    # continuation (streaming)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -45,6 +45,11 @@ MAIN_PROJECT_DIR="$(pwd)"
 PROJECT_NAME="$(basename "$MAIN_PROJECT_DIR")"
 AUTOMATION_BASE_DIR="${MAIN_PROJECT_DIR}_deputy"
 
+# Runtime files (logs, locks, markers) live here. Default /var/tmp — macOS clears /tmp on
+# reboot but not /var/tmp, so case logs survive a restart. Must match the dashboard's DEPUTY_TMP.
+RUNTIME_DIR="${DEPUTY_TMP:-/var/tmp}"
+mkdir -p "$RUNTIME_DIR" 2>/dev/null || true
+
 # Durable per-case journal (survives reboot — /tmp does not). Each case records what's
 # needed to resume it: worktree, branch, base/stack, status, and its SDK session id.
 CASES_DIR="${AUTOMATION_BASE_DIR}/cases"
@@ -66,12 +71,12 @@ function set_journal_status() {
 }
 function clear_journal() { rm -f "$(journal_file "$1")" "$(session_file_for "$1")"; }
 
-DAEMON_PID_FILE="/tmp/deputy-${PROJECT_NAME}.pid"
-DAEMON_LOG_FILE="/tmp/deputy-${PROJECT_NAME}.log"
-DAEMON_META_FILE="/tmp/deputy-${PROJECT_NAME}.meta"
-PROCESSED_FILE="/tmp/deputy-processed-${PROJECT_NAME}.txt"   # CI failures already handled (pr:sha)
-QUEUE_FILE="/tmp/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
-PRS_FILE="/tmp/deputy-prs-${PROJECT_NAME}.json"             # open PRs + unresolved review comments
+DAEMON_PID_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.pid"
+DAEMON_LOG_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.log"
+DAEMON_META_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.meta"
+PROCESSED_FILE="${RUNTIME_DIR}/deputy-processed-${PROJECT_NAME}.txt"   # CI failures already handled (pr:sha)
+QUEUE_FILE="${RUNTIME_DIR}/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
+PRS_FILE="${RUNTIME_DIR}/deputy-prs-${PROJECT_NAME}.json"             # open PRs + unresolved review comments
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
 function kill_tree() {
@@ -163,12 +168,12 @@ function watch_and_process() {
     if [ -n "$tickets" ]; then
       echo "[$(date)] Found tickets: $tickets"
       for ticket in $tickets; do
-        local lock="/tmp/deputy-item-${ticket}.lock"
+        local lock="${RUNTIME_DIR}/deputy-item-${ticket}.lock"
         if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then
           echo "[$(date)] $ticket already processing; skipping"
           continue
         fi
-        echo "[$(date)] Processing $ticket in background... (logs: /tmp/deputy-item-${ticket}.log)"
+        echo "[$(date)] Processing $ticket in background... (logs: ${RUNTIME_DIR}/deputy-item-${ticket}.log)"
         process_ticket "$ticket" & echo $! > "$lock"
       done
     else
@@ -274,15 +279,15 @@ function run_agent() {
 # mode=rebase runs the given prompt verbatim (for a stack rebase; the prompt force-pushes).
 function continue_ticket() {
   local ticket_id=$1 continuation_prompt=$2 cont_id=$3 branch_override=$4 mode=$5
-  local log_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.log"
-  local lock_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.lock"
-  local meta_file="/tmp/deputy-item-${ticket_id}-cont-${cont_id}.meta"  # so the case nests under its deputy
+  local log_file="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-${cont_id}.log"
+  local lock_file="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-${cont_id}.lock"
+  local meta_file="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-${cont_id}.meta"  # so the case nests under its deputy
   local branch_name
   if [ -n "$branch_override" ]; then branch_name="$branch_override"
   else branch_name=$(echo "$USER/$ticket_id" | tr '[:upper:]' '[:lower:]'); fi
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}_cont_${cont_id}"
   echo "$PROJECT_NAME" > "$meta_file"
-  [ -f "/tmp/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1
+  [ -f "${RUNTIME_DIR}/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file' '$meta_file'" EXIT
 
@@ -413,7 +418,7 @@ Triage each failing check before changing anything:
 3. Fix only the related failures (reproduce locally, fix root cause in code not tests, push).
 4. If all failures are unrelated, do nothing and say so."
 
-    local clock="/tmp/deputy-item-${ticket_id}-cont-ci-${commit_sha:0:8}.lock"
+    local clock="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-ci-${commit_sha:0:8}.lock"
     continue_ticket "$ticket_id" "$prompt" "ci-${commit_sha:0:8}" & echo $! > "$clock"
   done <<< "$rows"
 }
@@ -439,14 +444,14 @@ function check_for_conflicts() {
     local ticket_id; ticket_id=$(echo "$branch_name" | sed 's|.*/||' | tr '[:lower:]' '[:upper:]')
     # Let the stack flow own a still-stacked child; don't touch a busy/parked/blocked case.
     [ -f "$(stack_record "$ticket_id")" ] && continue
-    { [ -f "/tmp/deputy-item-${ticket_id}.lock" ] && kill -0 "$(cat "/tmp/deputy-item-${ticket_id}.lock" 2>/dev/null)" 2>/dev/null; } && continue
+    { [ -f "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" ] && kill -0 "$(cat "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" 2>/dev/null)" 2>/dev/null; } && continue
     local alive=0 cl
-    for cl in /tmp/deputy-item-${ticket_id}-cont-*.lock; do
+    for cl in ${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-*.lock; do
       [ -e "$cl" ] || continue; kill -0 "$(cat "$cl" 2>/dev/null)" 2>/dev/null && { alive=1; break; }
     done
     [ "$alive" = 1 ] && continue
-    [ -f "/tmp/deputy-ask-${ticket_id}.txt" ] && continue
-    [ -f "/tmp/deputy-blocked-${ticket_id}.meta" ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-ask-${ticket_id}.txt" ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-blocked-${ticket_id}.meta" ] && continue
     # A foreign worktree holding the branch means a human is on it — leave it alone.
     local cwt; cwt=$(worktree_for_branch "$branch_name")
     { [ -n "$cwt" ] && [[ "$cwt" != "${AUTOMATION_BASE_DIR}_"* ]]; } && continue
@@ -464,7 +469,7 @@ Rebase it onto the latest base and resolve the conflicts:
 5. \`git push --force-with-lease origin $branch_name\`
 If you cannot resolve safely, run \`git rebase --abort\`, do NOT push, and clearly report that a human is needed."
 
-    local clock="/tmp/deputy-item-${ticket_id}-cont-conflict-${commit_sha:0:8}.lock"
+    local clock="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-conflict-${commit_sha:0:8}.lock"
     continue_ticket "$ticket_id" "$prompt" "conflict-${commit_sha:0:8}" "$branch_name" rebase & echo $! > "$clock"
   done <<< "$rows"
 }
@@ -482,9 +487,9 @@ function branch_checked_out_elsewhere() {
 # merged). Clean rebase -> force-push automatically; a conflict is handed to the agent.
 function resync_stack() {
   local ticket_id=$1 parent_branch=$2 child_branch=$3 oldbase=$4 newbase_ref=$5 mode=$6
-  local lock_file="/tmp/deputy-item-${ticket_id}-cont-sync.lock"
-  local meta_file="/tmp/deputy-item-${ticket_id}-cont-sync.meta"
-  local log_file="/tmp/deputy-item-${ticket_id}-cont-sync.log"
+  local lock_file="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-sync.lock"
+  local meta_file="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-sync.meta"
+  local log_file="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-sync.log"
   local sf; sf=$(stack_record "$ticket_id")
   echo "$PROJECT_NAME" > "$meta_file"
   trap "rm -f '$lock_file' '$meta_file'" EXIT
@@ -562,13 +567,13 @@ function prune_merged_worktrees() {
     state=$(gh pr list --head "$short" --state all --json state --jq '.[0].state // empty' 2>/dev/null)
     { [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; } || continue
     ticket=$(echo "$short" | sed 's|.*/||' | tr '[:lower:]' '[:upper:]')
-    lock="/tmp/deputy-item-${ticket}.lock"
+    lock="${RUNTIME_DIR}/deputy-item-${ticket}.lock"
     { [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; } && continue  # live; leave it
     if git worktree remove --force "$path" 2>>"$DAEMON_LOG_FILE"; then
       git branch -D "$short" >/dev/null 2>&1 || true
       clear_journal "$ticket"
-      rm -f "$(stack_record "$ticket")" "/tmp/deputy-stopped-${ticket}.meta" \
-            "/tmp/deputy-failed-${ticket}.meta" "/tmp/deputy-failed-${ticket}.txt"
+      rm -f "$(stack_record "$ticket")" "${RUNTIME_DIR}/deputy-stopped-${ticket}.meta" \
+            "${RUNTIME_DIR}/deputy-failed-${ticket}.meta" "${RUNTIME_DIR}/deputy-failed-${ticket}.txt"
       echo "[$(date)] Pruned $ticket worktree (PR $state): $path" >> "$DAEMON_LOG_FILE"
     fi
   done < <(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch /{print p"\t"substr($0,8)} /^$/{p=""}')
@@ -589,11 +594,11 @@ function maintain_stacks() {
     ticket=$(basename "$sf" .json)
 
     # Don't touch a child that is actively working, parked, or blocked.
-    local clock="/tmp/deputy-item-${ticket}.lock" synclock="/tmp/deputy-item-${ticket}-cont-sync.lock"
+    local clock="${RUNTIME_DIR}/deputy-item-${ticket}.lock" synclock="${RUNTIME_DIR}/deputy-item-${ticket}-cont-sync.lock"
     { [ -f "$clock" ] && kill -0 "$(cat "$clock" 2>/dev/null)" 2>/dev/null; } && continue
     { [ -f "$synclock" ] && kill -0 "$(cat "$synclock" 2>/dev/null)" 2>/dev/null; } && continue
-    [ -f "/tmp/deputy-ask-${ticket}.txt" ] && continue
-    [ -f "/tmp/deputy-blocked-${ticket}.meta" ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-ask-${ticket}.txt" ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-blocked-${ticket}.meta" ] && continue
 
     parent_branch=$(jq -r '.parent_branch // empty' "$sf")
     child_branch=$(jq -r '.child_branch // empty' "$sf")
@@ -639,15 +644,15 @@ function drain_continue_queue() {
     [ -z "$cid" ] && cid="q$(echo "$line" | cksum | cut -d' ' -f1)"
     if [ "$kind" = "rerun" ]; then
       echo "[$(date)] Re-run request for $ticket" >> "$DAEMON_LOG_FILE"
-      local rlock="/tmp/deputy-item-${ticket}.lock"
+      local rlock="${RUNTIME_DIR}/deputy-item-${ticket}.lock"
       resume_or_restart "$ticket" & echo $! > "$rlock"
     elif [ "$kind" = "resume" ]; then
       echo "[$(date)] Resume request for $ticket" >> "$DAEMON_LOG_FILE"
-      local rlock="/tmp/deputy-item-${ticket}.lock"
+      local rlock="${RUNTIME_DIR}/deputy-item-${ticket}.lock"
       resume_ticket "$ticket" "$prompt" & echo $! > "$rlock"
     else
       echo "[$(date)] Local continuation request for $ticket (cont $cid)" >> "$DAEMON_LOG_FILE"
-      local clock="/tmp/deputy-item-${ticket}-cont-${cid}.lock"
+      local clock="${RUNTIME_DIR}/deputy-item-${ticket}-cont-${cid}.lock"
       continue_ticket "$ticket" "$prompt" "$cid" "$branch" & echo $! > "$clock"
     fi
   done < "$tmp"
@@ -759,14 +764,14 @@ function ticket_pr_branch() {
 
 function process_ticket() {
   local ticket_id=$1
-  local log_file="/tmp/deputy-item-${ticket_id}.log"
+  local log_file="${RUNTIME_DIR}/deputy-item-${ticket_id}.log"
   local ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
-  local lock_file="/tmp/deputy-item-${ticket_id}.lock"
-  local input_file="/tmp/deputy-input-${ticket_id}.jsonl"   # live chat channel for this agent
-  local meta_file="/tmp/deputy-item-${ticket_id}.meta"      # which deputy (repo) this case belongs to
-  local ask_file="/tmp/deputy-ask-${ticket_id}.txt"
+  local lock_file="${RUNTIME_DIR}/deputy-item-${ticket_id}.lock"
+  local input_file="${RUNTIME_DIR}/deputy-input-${ticket_id}.jsonl"   # live chat channel for this agent
+  local meta_file="${RUNTIME_DIR}/deputy-item-${ticket_id}.meta"      # which deputy (repo) this case belongs to
+  local ask_file="${RUNTIME_DIR}/deputy-ask-${ticket_id}.txt"
   local session_file; session_file=$(session_file_for "$ticket_id")  # durable: survives reboot
-  local blocked_meta="/tmp/deputy-blocked-${ticket_id}.meta"
+  local blocked_meta="${RUNTIME_DIR}/deputy-blocked-${ticket_id}.meta"
   local stack_file; stack_file=$(stack_record "$ticket_id"); mkdir -p "$STACKS_DIR"
 
   # --- Dependency gate (stacked PRs) -------------------------------------------
@@ -778,7 +783,7 @@ function process_ticket() {
   if [ "$base_kind" = "WAIT" ]; then
     local reason="${base#WAIT|}"
     echo "$PROJECT_NAME" > "$blocked_meta"
-    echo "$reason" > "/tmp/deputy-blocked-${ticket_id}.txt"
+    echo "$reason" > "${RUNTIME_DIR}/deputy-blocked-${ticket_id}.txt"
     local burl; burl=$(node "$TRACKER_CLI" url "$ticket_id" 2>/dev/null)
     [ -n "$burl" ] && echo "[$(date)] ITEM_URL: $burl" >> "$log_file"
     echo "[$(date)] BLOCKED: $ticket_id ($reason)" >> "$DAEMON_LOG_FILE"
@@ -786,7 +791,7 @@ function process_ticket() {
     rm -f "$lock_file"
     return 0
   fi
-  rm -f "$blocked_meta" "/tmp/deputy-blocked-${ticket_id}.txt"
+  rm -f "$blocked_meta" "${RUNTIME_DIR}/deputy-blocked-${ticket_id}.txt"
   if [ "$base_kind" = "STACK" ]; then
     stack_parent=$(echo "$base" | cut -d'|' -f2)
     stack_branch=$(echo "$base" | cut -d'|' -f3)
@@ -794,9 +799,9 @@ function process_ticket() {
 
   : > "$input_file"
   echo "$PROJECT_NAME" > "$meta_file"
-  rm -f "$ask_file" "$session_file" "/tmp/deputy-paused-${ticket_id}.meta" \
-        "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt"  # clear a prior failure on (re)start
-  [ -f "/tmp/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1  # full-auto: never park to ask
+  rm -f "$ask_file" "$session_file" "${RUNTIME_DIR}/deputy-paused-${ticket_id}.meta" \
+        "${RUNTIME_DIR}/deputy-failed-${ticket_id}.meta" "${RUNTIME_DIR}/deputy-failed-${ticket_id}.txt"  # clear a prior failure on (re)start
+  [ -f "${RUNTIME_DIR}/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1  # full-auto: never park to ask
   # The spawner records our real PID in the lock (for stop-ticket); we clear it on exit.
   trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
 
@@ -947,7 +952,7 @@ Work autonomously. When done, report the PR URL."
   # Parked on a question: keep the worktree + saved session, surface it, and wait.
   if [ -f "$ask_file" ]; then
     echo "[$(date)] NEEDS-INPUT: $ticket_id" >> "$DAEMON_LOG_FILE"
-    echo "$PROJECT_NAME" > "/tmp/deputy-paused-${ticket_id}.meta"
+    echo "$PROJECT_NAME" > "${RUNTIME_DIR}/deputy-paused-${ticket_id}.meta"
     set_journal_status "$ticket_id" parked
     echo "[$(date)] Paused waiting for your answer (reply in the dashboard)." >> "$log_file"
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
@@ -978,9 +983,9 @@ Work autonomously. When done, report the PR URL."
 
   if [ "$failed" -eq 1 ]; then
     echo "[$(date)] FAILED: $ticket_id ($reason)" >> "$DAEMON_LOG_FILE"
-    echo "$PROJECT_NAME" > "/tmp/deputy-failed-${ticket_id}.meta"
+    echo "$PROJECT_NAME" > "${RUNTIME_DIR}/deputy-failed-${ticket_id}.meta"
     set_journal_status "$ticket_id" failed
-    { echo "$reason"; grep -iE 'fatal:|^\[ERROR\]|CONNECT tunnel|Stream closed|rejected|permission denied|error_max_turns|not allowed' "$log_file" | tail -3; } > "/tmp/deputy-failed-${ticket_id}.txt"
+    { echo "$reason"; grep -iE 'fatal:|^\[ERROR\]|CONNECT tunnel|Stream closed|rejected|permission denied|error_max_turns|not allowed' "$log_file" | tail -3; } > "${RUNTIME_DIR}/deputy-failed-${ticket_id}.txt"
     echo "[$(date)] Marked FAILED ($reason). Worktree kept at $ticket_worktree so no work is lost; restart the case to retry." >> "$log_file"
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"   # keep the worktree
     return 0
@@ -1010,13 +1015,13 @@ Work autonomously. When done, report the PR URL."
 # Answers a parked case: resumes its saved SDK session in the same worktree.
 function resume_ticket() {
   local ticket_id=$1 reply=$2
-  local log_file="/tmp/deputy-item-${ticket_id}.log"
-  local lock_file="/tmp/deputy-item-${ticket_id}.lock"
-  local input_file="/tmp/deputy-input-${ticket_id}.jsonl"
-  local meta_file="/tmp/deputy-item-${ticket_id}.meta"
-  local ask_file="/tmp/deputy-ask-${ticket_id}.txt"
+  local log_file="${RUNTIME_DIR}/deputy-item-${ticket_id}.log"
+  local lock_file="${RUNTIME_DIR}/deputy-item-${ticket_id}.lock"
+  local input_file="${RUNTIME_DIR}/deputy-input-${ticket_id}.jsonl"
+  local meta_file="${RUNTIME_DIR}/deputy-item-${ticket_id}.meta"
+  local ask_file="${RUNTIME_DIR}/deputy-ask-${ticket_id}.txt"
   local session_file; session_file=$(session_file_for "$ticket_id")
-  local paused_meta="/tmp/deputy-paused-${ticket_id}.meta"
+  local paused_meta="${RUNTIME_DIR}/deputy-paused-${ticket_id}.meta"
   local jf; jf=$(journal_file "$ticket_id")
   local ticket_worktree; ticket_worktree=$(jq -r '.worktree // empty' "$jf" 2>/dev/null)
   [ -z "$ticket_worktree" ] && ticket_worktree="${AUTOMATION_BASE_DIR}_${ticket_id}"
@@ -1030,7 +1035,7 @@ function resume_ticket() {
   : > "$input_file"
   echo "$PROJECT_NAME" > "$meta_file"
   rm -f "$ask_file" "$paused_meta"
-  [ -f "/tmp/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1
+  [ -f "${RUNTIME_DIR}/deputy-auto-${ticket_id}" ] && export DEPUTY_FULL_AUTO=1
   trap "rm -f '$lock_file' '$input_file' '$meta_file'" EXIT
 
   set_journal_status "$ticket_id" working
@@ -1082,9 +1087,9 @@ committed."
 
   if [ $exit_code -ne 0 ] && [ "$made_pr" -eq 0 ]; then
     echo "[$(date)] FAILED: $ticket_id (resumed, exit $exit_code)" >> "$DAEMON_LOG_FILE"
-    echo "$PROJECT_NAME" > "/tmp/deputy-failed-${ticket_id}.meta"
+    echo "$PROJECT_NAME" > "${RUNTIME_DIR}/deputy-failed-${ticket_id}.meta"
     set_journal_status "$ticket_id" failed
-    { echo "resumed run failed (exit $exit_code)"; grep -iE 'fatal:|^\[ERROR\]|CONNECT tunnel|Stream closed|rejected|permission denied|error_max_turns' "$log_file" | tail -3; } > "/tmp/deputy-failed-${ticket_id}.txt"
+    { echo "resumed run failed (exit $exit_code)"; grep -iE 'fatal:|^\[ERROR\]|CONNECT tunnel|Stream closed|rejected|permission denied|error_max_turns' "$log_file" | tail -3; } > "${RUNTIME_DIR}/deputy-failed-${ticket_id}.txt"
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"   # keep the worktree
     return 0
   fi
@@ -1101,8 +1106,8 @@ committed."
 function resume_or_restart() {
   local ticket_id=$1
   local jf; jf=$(journal_file "$ticket_id")
-  local log_file="/tmp/deputy-item-${ticket_id}.log"
-  rm -f "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt" "/tmp/deputy-stopped-${ticket_id}.meta"
+  local log_file="${RUNTIME_DIR}/deputy-item-${ticket_id}.log"
+  rm -f "${RUNTIME_DIR}/deputy-failed-${ticket_id}.meta" "${RUNTIME_DIR}/deputy-failed-${ticket_id}.txt" "${RUNTIME_DIR}/deputy-stopped-${ticket_id}.meta"
   local session wt branch stack
   session=$(cat "$(session_file_for "$ticket_id")" 2>/dev/null)
   wt=$(jq -r '.worktree // empty' "$jf" 2>/dev/null)
@@ -1112,13 +1117,13 @@ function resume_or_restart() {
   if [ -n "$session" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
     resume_ticket "$ticket_id" "__continue__"; return
   fi
-  echo "$PROJECT_NAME" > "/tmp/deputy-item-${ticket_id}.meta"
+  echo "$PROJECT_NAME" > "${RUNTIME_DIR}/deputy-item-${ticket_id}.meta"
   if [ -n "$branch" ] && recover_pr "$ticket_id" "$branch" "$log_file" "$stack"; then
     echo "[$(date)] Re-run: finished $ticket_id's PR without a full re-run" >> "$DAEMON_LOG_FILE"
-    clear_journal "$ticket_id"; rm -f "/tmp/deputy-item-${ticket_id}.lock" "/tmp/deputy-item-${ticket_id}.meta"; return
+    clear_journal "$ticket_id"; rm -f "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" "${RUNTIME_DIR}/deputy-item-${ticket_id}.meta"; return
   fi
   echo "[$(date)] Re-run: starting $ticket_id from scratch" >> "$DAEMON_LOG_FILE"
-  clear_journal "$ticket_id"; rm -f "/tmp/deputy-item-${ticket_id}.lock"
+  clear_journal "$ticket_id"; rm -f "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock"
   process_ticket "$ticket_id"
 }
 
@@ -1134,7 +1139,7 @@ function reconcile_cases() {
     status=$(jq -r '.status // empty' "$f" 2>/dev/null)
     [ -z "$ticket" ] && continue
     [ "$proj" = "$PROJECT_NAME" ] || continue
-    lock="/tmp/deputy-item-${ticket}.lock"
+    lock="${RUNTIME_DIR}/deputy-item-${ticket}.lock"
     if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then continue; fi  # still alive
     rm -f "$lock"   # stale lock from a killed agent
     case "$status" in
@@ -1142,10 +1147,10 @@ function reconcile_cases() {
         echo "[$(date)] Reconcile: $ticket was interrupted; resuming" >> "$DAEMON_LOG_FILE"
         resume_or_restart "$ticket" & echo $! > "$lock" ;;
       failed)   # rehydrate the /tmp marker (wiped on reboot) so it stays visible
-        echo "$proj" > "/tmp/deputy-failed-${ticket}.meta"
-        [ -f "/tmp/deputy-failed-${ticket}.txt" ] || echo "the run failed before the last restart" > "/tmp/deputy-failed-${ticket}.txt" ;;
+        echo "$proj" > "${RUNTIME_DIR}/deputy-failed-${ticket}.meta"
+        [ -f "${RUNTIME_DIR}/deputy-failed-${ticket}.txt" ] || echo "the run failed before the last restart" > "${RUNTIME_DIR}/deputy-failed-${ticket}.txt" ;;
       stopped)
-        echo "$proj" > "/tmp/deputy-stopped-${ticket}.meta" ;;
+        echo "$proj" > "${RUNTIME_DIR}/deputy-stopped-${ticket}.meta" ;;
     esac
   done
 }
@@ -1157,7 +1162,7 @@ function stop_ticket() {
   [ -z "$ticket_id" ] && { echo "Usage: deputy stop-ticket <TICKET>"; exit 1; }
   local killed=0 lf pid
 
-  for lf in "/tmp/deputy-item-${ticket_id}.lock" /tmp/deputy-item-${ticket_id}-cont-*.lock; do
+  for lf in "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" ${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-*.lock; do
     [ -f "$lf" ] || continue
     pid=$(cat "$lf" 2>/dev/null)
     [ -n "$pid" ] && { kill_tree "$pid"; killed=1; }
@@ -1165,13 +1170,13 @@ function stop_ticket() {
   done
 
   # Clear only the transient in-flight markers; keep the durable journal + session + worktree.
-  rm -f "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta" \
-        "/tmp/deputy-blocked-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.txt" \
-        "$(stack_record "$ticket_id")" "/tmp/deputy-failed-${ticket_id}.meta" "/tmp/deputy-failed-${ticket_id}.txt"
+  rm -f "${RUNTIME_DIR}/deputy-ask-${ticket_id}.txt" "${RUNTIME_DIR}/deputy-paused-${ticket_id}.meta" \
+        "${RUNTIME_DIR}/deputy-blocked-${ticket_id}.meta" "${RUNTIME_DIR}/deputy-blocked-${ticket_id}.txt" \
+        "$(stack_record "$ticket_id")" "${RUNTIME_DIR}/deputy-failed-${ticket_id}.meta" "${RUNTIME_DIR}/deputy-failed-${ticket_id}.txt"
 
   if [ -f "$(journal_file "$ticket_id")" ]; then
     set_journal_status "$ticket_id" stopped
-    echo "$PROJECT_NAME" > "/tmp/deputy-stopped-${ticket_id}.meta"   # stays on the board as a stopped card
+    echo "$PROJECT_NAME" > "${RUNTIME_DIR}/deputy-stopped-${ticket_id}.meta"   # stays on the board as a stopped card
     killed=1
   fi
   [ $killed -eq 1 ] && echo "Stopped $ticket_id (halted; kept so you can ▶ re-run it)." || echo "$ticket_id does not appear to be active."
@@ -1182,13 +1187,13 @@ function forget_ticket() {
   local ticket_id=$1
   [ -z "$ticket_id" ] && { echo "Usage: deputy forget-ticket <TICKET>"; exit 1; }
   local lf pid
-  for lf in "/tmp/deputy-item-${ticket_id}.lock" /tmp/deputy-item-${ticket_id}-cont-*.lock; do
+  for lf in "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" ${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-*.lock; do
     [ -f "$lf" ] || continue; pid=$(cat "$lf" 2>/dev/null); [ -n "$pid" ] && kill_tree "$pid"; rm -f "$lf" "${lf%.lock}.meta"
   done
-  rm -f "/tmp/deputy-ask-${ticket_id}.txt" "/tmp/deputy-paused-${ticket_id}.meta" \
-        "/tmp/deputy-blocked-${ticket_id}.meta" "/tmp/deputy-blocked-${ticket_id}.txt" \
-        "$(stack_record "$ticket_id")" "/tmp/deputy-failed-${ticket_id}.meta" \
-        "/tmp/deputy-failed-${ticket_id}.txt" "/tmp/deputy-stopped-${ticket_id}.meta" "/tmp/deputy-item-${ticket_id}.meta"
+  rm -f "${RUNTIME_DIR}/deputy-ask-${ticket_id}.txt" "${RUNTIME_DIR}/deputy-paused-${ticket_id}.meta" \
+        "${RUNTIME_DIR}/deputy-blocked-${ticket_id}.meta" "${RUNTIME_DIR}/deputy-blocked-${ticket_id}.txt" \
+        "$(stack_record "$ticket_id")" "${RUNTIME_DIR}/deputy-failed-${ticket_id}.meta" \
+        "${RUNTIME_DIR}/deputy-failed-${ticket_id}.txt" "${RUNTIME_DIR}/deputy-stopped-${ticket_id}.meta" "${RUNTIME_DIR}/deputy-item-${ticket_id}.meta"
   clear_journal "$ticket_id"
   local wt="${AUTOMATION_BASE_DIR}_${ticket_id}"
   [ -d "$wt" ] && { cd "$MAIN_PROJECT_DIR" && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; git worktree prune 2>/dev/null || true; }

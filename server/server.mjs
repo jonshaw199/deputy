@@ -62,7 +62,7 @@ export function makeServer(opts = {}) {
   const fileEnv = opts.fileEnv ?? parseEnvFile(join(PROJECT_ROOT, '.env'));
   const cfg = (k, d) => process.env[k] ?? fileEnv[k] ?? d;
 
-  const TMP = opts.tmp ?? cfg('DEPUTY_TMP', '/tmp');
+  const TMP = opts.tmp ?? cfg('DEPUTY_TMP', '/var/tmp'); // durable across reboot (macOS clears /tmp, not /var/tmp); must match the daemon's RUNTIME_DIR
   const PORT = opts.port ?? Number(cfg('DEPUTY_DASHBOARD_PORT', '4319'));
   const SITE_URL = opts.siteUrl ?? cfg('DEPUTY_SITE_URL', '');
   const REPOS = opts.repos ?? (cfg('DEPUTY_REPOS', '') || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -396,7 +396,7 @@ export function makeServer(opts = {}) {
           ? `vscode://anthropic.claude-code/open?session=${encodeURIComponent(session)}`
           : 'vscode://anthropic.claude-code/open';
         const openClaude = () => setTimeout(() => execFile('open', [uri], () => {}), 1200);
-        execFile('code', ['-n', wt], (err) => err
+        execFile('code', ['-r', wt], (err) => err  // -r = reuse the current window instead of spawning a new one
           ? execFile('open', ['-a', 'Visual Studio Code', wt], () => openClaude())
           : openClaude());
       }
