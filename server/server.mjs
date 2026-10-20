@@ -365,6 +365,14 @@ export function makeServer(opts = {}) {
       }
       return json(res, 400, { error: 'no live or parked agent for that ticket' });
     }
+    if (path === '/api/interrupt' && req.method === 'POST') {
+      // Drop the signal file the runner watches: halt the current turn, agent reports + waits.
+      const { ticket } = await readBody(req);
+      if (!ticket) return json(res, 400, { error: 'ticket required' });
+      if (!listActive().some((a) => a.ticket === ticket)) return json(res, 400, { error: 'no live agent to interrupt' });
+      writeFileSync(join(TMP, `deputy-interrupt-${ticket}`), '1');
+      return json(res, 200, { ok: true });
+    }
     if (path === '/api/open-in-code' && req.method === 'POST') {
       // Hand a case off to a real Claude Code session in VS Code: open its worktree, then the
       // Claude tab resuming the agent's saved conversation (fresh chat if the session is gone).

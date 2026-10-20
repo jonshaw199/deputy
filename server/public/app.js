@@ -212,6 +212,7 @@ async function openLog(target, title) {
     ? (target.needsInput ? 'Answer the deputy…' : 'Reply to this agent…')
     : ((target.pr?.comments || []).length ? 'Extra guidance (or “address all” →)' : 'Tell Deputy to do more on this PR…');
   $('#letDecide').classList.toggle('hidden', !target.needsInput);
+  $('#interruptBtn').classList.toggle('hidden', !(live && !target.needsInput)); // only while actively working
   $('#addressAll').classList.toggle('hidden', !(target.pr && (target.pr.comments || []).length));
   renderDetails(target);
   $('#logBody').textContent = '';
@@ -325,6 +326,14 @@ $('#logReply').onsubmit = async (e) => {
 };
 // "Address all" = submit with an empty box; the submit handler confirms and bundles the comments.
 $('#addressAll').onclick = () => { $('#replyInput').value = ''; $('#logReply').requestSubmit(); };
+// Interrupt: halt the agent's current turn now; it reports what it was doing and waits for you.
+$('#interruptBtn').onclick = async () => {
+  if (!logTarget?.ticket) return;
+  const btn = $('#interruptBtn'); btn.disabled = true; const t = btn.textContent; btn.textContent = 'Interrupting…';
+  const r = await api('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: logTarget.ticket }) });
+  btn.disabled = false; btn.textContent = t;
+  if (r.error) alert(r.error);
+};
 // "I don't feel like answering" — resume the parked agent and let it decide for itself.
 $('#letDecide').onclick = async () => {
   if (!logTarget?.needsInput) return;

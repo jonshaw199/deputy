@@ -254,9 +254,14 @@ function run_agent() {
   # run_agent <worktree> <prompt> <log_file> [input_file] [ask_file] [session_file] [resume_id]
   local worktree=$1 agent_prompt=$2 lf=$3 input_file=$4 ask_file=$5 session_file=$6 resume_id=$7
   [ -n "$PRE_AGENT" ] && eval "$PRE_AGENT" >> "$lf" 2>&1
+  # The interrupt button (dashboard) drops this file; the runner watches for it. Derive it from
+  # the input file (same ticket) and clear any stale signal before the agent starts.
+  local interrupt_file=""
+  if [ -n "$input_file" ]; then interrupt_file="${input_file/deputy-input-/deputy-interrupt-}"; interrupt_file="${interrupt_file%.jsonl}"; rm -f "$interrupt_file"; fi
   ( cd "$worktree" && env -u CLAUDECODE DEPUTY_PROMPT="$agent_prompt" \
       ${DEPUTY_GITHUB_TOKEN:+GITHUB_TOKEN="$DEPUTY_GITHUB_TOKEN"} \
       ${input_file:+DEPUTY_INPUT="$input_file"} \
+      ${interrupt_file:+DEPUTY_INTERRUPT_FILE="$interrupt_file"} \
       ${ask_file:+DEPUTY_ASK_FILE="$ask_file"} \
       ${session_file:+DEPUTY_SESSION_FILE="$session_file"} \
       ${resume_id:+DEPUTY_RESUME="$resume_id"} \
@@ -1038,15 +1043,18 @@ function resume_ticket() {
     echo "[$(date)] Resuming $ticket_id with your answer" >> "$log_file"
     echo "[YOU] $reply" >> "$log_file"
     echo "⏳ Reconnecting to the agent..." >> "$log_file"
-    prompt="The user sent you a message:
+    prompt="The user sent you a message mid-run — this is them steering you, so address it FIRST,
+before anything else:
 
 $reply
 
-Treat it as guidance for this work. If it answers a question you were waiting on, proceed and
-finish (implement, test, commit, push, open or update the PR). If it asks for a change, do it
-(edit, test, commit, push, update the PR). If it's just a question about the work, answer it.
-Only call mcp__deputy__ask_user if you genuinely cannot proceed or need a decision; otherwise
-act and report back. Do NOT redo work that is already committed."
+- If it's a question, answer it directly and concisely.
+- If it's a redirection or a change they want, acknowledge it and apply it.
+- If it's a quick check-in, reply briefly.
+Respond to what they actually said before taking any other action. Only continue the prior work
+AFTER you've responded, and only if it still makes sense given their message. If you're unsure
+what they want, ask them rather than guessing or charging ahead. Do NOT redo work that is already
+committed."
   fi
 
   run_agent "$ticket_worktree" "$prompt" "$log_file" "$input_file" "$ask_file" "$session_file" "$session"
