@@ -237,13 +237,16 @@ function prepare_worktree_for_testing() {
   [ -n "$TEST_SETUP" ] || return 0
   [ -d "$worktree" ] || return 0
   grep -q "TEST-READY: $worktree" "$log_file" 2>/dev/null && return 0  # already prepped
+  local timeout="${DEPUTY_TEST_SETUP_TIMEOUT:-900}"  # cap so a hanging step (e.g. bin/update's server restart) can't stick on "preparing" forever
   (
     echo "[$(date)] Preparing worktree for local testing: $TEST_SETUP" >> "$log_file"
-    if (cd "$worktree" && eval "$TEST_SETUP" >> "$log_file" 2>&1); then
-      echo "[$(date)] TEST-READY: $worktree" >> "$log_file"
-    else
-      echo "[$(date)] WARN: test setup returned non-zero; worktree may not run" >> "$log_file"
-    fi
+    ( cd "$worktree" && eval "$TEST_SETUP" >> "$log_file" 2>&1 ) &
+    local sp=$!
+    ( sleep "$timeout"; kill -0 "$sp" 2>/dev/null && { echo "[$(date)] Test setup still running after ${timeout}s — stopping it; deps are installed, so the worktree is usable (a later step like a server restart was left pending)." >> "$log_file"; kill_tree "$sp"; } ) & local wd=$!
+    wait "$sp" 2>/dev/null
+    kill "$wd" 2>/dev/null
+    # TEST-READY = "prep finished" (not "succeeded"), so the dashboard stops showing "preparing".
+    echo "[$(date)] TEST-READY: $worktree" >> "$log_file"
   ) &
 }
 
