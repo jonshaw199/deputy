@@ -100,6 +100,9 @@ button:hover { border-color: var(--accent); }
 .detail .meta-row { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); padding: 2px 0; }
 .detail .meta-row > span:first-child { white-space: nowrap; flex-shrink: 0; }
 .detail .meta-row .path { color: var(--text); font-size: 11px; word-break: break-all; text-align: right; }
+.detail .meta-row .val { display: flex; align-items: flex-start; gap: 6px; min-width: 0; justify-content: flex-end; }
+.copybtn { flex: 0 0 auto; background: none; border: none; color: var(--muted); cursor: pointer; padding: 1px 3px; line-height: 1; display: inline-flex; align-items: center; }
+.copybtn:hover { color: var(--accent); }
 .detail .err { color: var(--text); padding: 8px 10px; border-left: 3px solid var(--fail); background: rgba(248,81,73,.08); border-radius: 6px; white-space: pre-wrap; font: 12px/1.5 "SF Mono", Menlo, monospace; }
 .statepill { display: inline-block; font-size: 11px; padding: 1px 9px; border-radius: 999px; border: 1px solid var(--border); }
 @media (max-width: 760px) {

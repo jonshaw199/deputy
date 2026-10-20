@@ -8,6 +8,7 @@ const linkTickets = (s) => esc(String(s || '')).replace(/\b([A-Z][A-Z0-9]+-\d+)\
 const GUN = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><rect x="9" y="6.4" width="12" height="2.6" rx=".5"/><circle cx="8" cy="9.6" r="3.3"/><path d="M7 12.4l-1.5 5.1a1 1 0 0 0 1 1.3h2a1 1 0 0 0 1-.75L11 12.4z"/><rect x="18.6" y="5" width="2.4" height="2" rx=".3"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 const PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 5l12 7-12 7z"/></svg>';
+const COPY = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
 
 let logTarget = null; // { ticket } or { daemon } currently shown in the modal
 
@@ -238,7 +239,7 @@ function renderDetails(target) {
   }
   if (target.worktree) {
     const prepping = target.ready === false ? ' <span class="muted">(preparing…)</span>' : '';
-    meta.push(`<div class="meta-row"><span>worktree</span><span class="path">${esc(target.worktree)}${prepping}</span></div>`);
+    meta.push(`<div class="meta-row"><span>worktree</span><span class="val"><span class="path">${esc(target.worktree)}${prepping}</span><button class="copybtn" data-copy="${esc(target.worktree)}" title="Copy path">${COPY}</button></span></div>`);
   }
   const openCode = target.worktree ? `<button class="ghost" data-open-code style="margin-top:10px;padding:3px 9px;font-size:12px">Open in editor ↗</button>` : '';
   const s = [`<div class="detail"><h4>Case</h4>${meta.join('')}${openCode}</div>`];
@@ -255,6 +256,9 @@ function renderDetails(target) {
   }
   d.innerHTML = s.join('');
   d.classList.remove('hidden');
+  d.querySelectorAll('[data-copy]').forEach((b) => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); const h = b.innerHTML; b.innerHTML = '✓'; setTimeout(() => { b.innerHTML = h; }, 1000); } catch {}
+  });
   const rb = d.querySelector('[data-retry]');
   if (rb) rb.onclick = async () => { await api('/api/rerun', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: target.ticket, project: target.project }) }); $('#logClose').click(); refresh(); };
   const ob = d.querySelector('[data-open-code]');
