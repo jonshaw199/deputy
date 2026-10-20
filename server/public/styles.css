@@ -28,7 +28,7 @@ section { margin-bottom: 32px; }
 .card .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .deputy-actions { display: flex; gap: 14px; align-items: center; }
 .card h3 { margin: 0; font-size: 15px; }
-.card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-all; }
+.card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: break-word; }
 
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); vertical-align: middle; }
 .dot.ok { background: var(--ok); } .dot.fail { background: var(--fail); }
