@@ -181,6 +181,9 @@ function watch_and_process() {
     # Keep stacked (dependent) PRs rebased as their parent branches move or merge.
     maintain_stacks
 
+    # Keep standalone PRs merge-ready: rebase + resolve when one conflicts with its base.
+    check_for_conflicts
+
     # Remove Deputy's worktrees whose PR merged/closed (kept until then for local testing).
     prune_merged_worktrees
 
@@ -404,6 +407,57 @@ Triage each failing check before changing anything:
 
     local clock="/tmp/deputy-item-${ticket_id}-cont-ci-${commit_sha:0:8}.lock"
     continue_ticket "$ticket_id" "$prompt" "ci-${commit_sha:0:8}" & echo $! > "$clock"
+  done <<< "$rows"
+}
+
+# Keep deputy's open PRs merge-ready: when one conflicts with its base (main drifted under it),
+# rebase it onto the base and hand the conflict to the agent to resolve — same machinery stacks
+# use, but triggered by conflict-with-base instead of a parent merge. Toggle: DEPUTY_CONFLICT_AUTORESOLVE.
+function check_for_conflicts() {
+  [ "${DEPUTY_CONFLICT_AUTORESOLVE:-true}" = "true" ] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  local pr_list
+  pr_list=$(cd "$MAIN_PROJECT_DIR" && gh pr list --state open --label "$PR_LABEL" --json number,headRefName,headRefOid,baseRefName,mergeable 2>/dev/null) || return 0
+  local rows
+  # Only CONFLICTING; UNKNOWN means GitHub is still computing mergeability — recheck next poll.
+  rows=$(echo "$pr_list" | jq -r '.[] | select(.mergeable=="CONFLICTING") | [(.number|tostring), .headRefName, .headRefOid, .baseRefName] | @tsv' 2>/dev/null)
+  [ -z "$rows" ] && return 0
+
+  while IFS=$'\t' read -r pr_number branch_name commit_sha base_ref; do
+    [ -z "$pr_number" ] && continue
+    local key="conflict:${pr_number}:${commit_sha}"
+    grep -qF "$key" "$PROCESSED_FILE" 2>/dev/null && continue   # already attempted this head; a new push re-checks
+
+    local ticket_id; ticket_id=$(echo "$branch_name" | sed 's|.*/||' | tr '[:lower:]' '[:upper:]')
+    # Let the stack flow own a still-stacked child; don't touch a busy/parked/blocked case.
+    [ -f "$(stack_record "$ticket_id")" ] && continue
+    { [ -f "/tmp/deputy-item-${ticket_id}.lock" ] && kill -0 "$(cat "/tmp/deputy-item-${ticket_id}.lock" 2>/dev/null)" 2>/dev/null; } && continue
+    local alive=0 cl
+    for cl in /tmp/deputy-item-${ticket_id}-cont-*.lock; do
+      [ -e "$cl" ] || continue; kill -0 "$(cat "$cl" 2>/dev/null)" 2>/dev/null && { alive=1; break; }
+    done
+    [ "$alive" = 1 ] && continue
+    [ -f "/tmp/deputy-ask-${ticket_id}.txt" ] && continue
+    [ -f "/tmp/deputy-blocked-${ticket_id}.meta" ] && continue
+    # A foreign worktree holding the branch means a human is on it — leave it alone.
+    local cwt; cwt=$(worktree_for_branch "$branch_name")
+    { [ -n "$cwt" ] && [[ "$cwt" != "${AUTOMATION_BASE_DIR}_"* ]]; } && continue
+
+    echo "$key" >> "$PROCESSED_FILE"
+    echo "[$(date)] Conflict auto-resolve: PR #$pr_number ($ticket_id) conflicts with $base_ref at ${commit_sha:0:8}" >> "$DAEMON_LOG_FILE"
+
+    local prompt="PR #$pr_number (branch \`$branch_name\`) has merge conflicts with its base (\`origin/$base_ref\`); the base moved under it.
+
+Rebase it onto the latest base and resolve the conflicts:
+1. \`git fetch origin $base_ref\`
+2. \`git rebase origin/$base_ref\`
+3. Resolve every conflict — THIS branch's own changes MUST survive; re-apply their intent on top of the new base, do NOT drop them.
+4. Run the relevant tests.
+5. \`git push --force-with-lease origin $branch_name\`
+If you cannot resolve safely, run \`git rebase --abort\`, do NOT push, and clearly report that a human is needed."
+
+    local clock="/tmp/deputy-item-${ticket_id}-cont-conflict-${commit_sha:0:8}.lock"
+    continue_ticket "$ticket_id" "$prompt" "conflict-${commit_sha:0:8}" "$branch_name" rebase & echo $! > "$clock"
   done <<< "$rows"
 }
 
