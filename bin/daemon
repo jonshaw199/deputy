@@ -352,6 +352,15 @@ Work autonomously. Report what you did."
     echo "[$(date)] SUCCESS continuation: $ticket_id (cont $cont_id)" >> "$DAEMON_LOG_FILE"
   else
     echo "[$(date)] FAILED continuation: $ticket_id (cont $cont_id, exit $exit_code)" >> "$DAEMON_LOG_FILE"
+    # If the agent never ran at all (no [RESULT] in its log — e.g. a tool version the machine
+    # lacks, or worktree setup failed), a CI/conflict attempt shouldn't stay marked "handled" or
+    # it never retries once the env is fixed. Un-mark its sha so the next poll tries again.
+    if { [[ "$cont_id" == conflict-* ]] || [[ "$cont_id" == ci-* ]]; } \
+       && ! grep -q '\[RESULT\]' "$log_file" 2>/dev/null && [ -f "$PROCESSED_FILE" ]; then
+      local sha8="${cont_id#*-}"
+      grep -v ":${sha8}" "$PROCESSED_FILE" > "${PROCESSED_FILE}.tmp" 2>/dev/null && mv -f "${PROCESSED_FILE}.tmp" "$PROCESSED_FILE"
+      echo "[$(date)] Setup/start failure — un-marked ${cont_id} so it retries next poll" >> "$DAEMON_LOG_FILE"
+    fi
   fi
 
   # Only remove the worktree if we created it (don't nuke one the user is in).
