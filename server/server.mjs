@@ -215,6 +215,14 @@ export function makeServer(opts = {}) {
       return (comments || []).every((c) => snap.has(c.url));
     } catch { return false; }
   };
+  // Per-comment dismiss: GitHub has no "resolved" for top-level/review-body comments, so hide
+  // the ones you've cleared in Deputy (by url). Reduces the 💬 count and the modal list.
+  const visibleComments = (ticket, comments) => {
+    let dropped;
+    try { dropped = new Set(JSON.parse(readFileSync(join(TMP, `deputy-cmtdismiss-${ticket}`), 'utf8')).urls || []); }
+    catch { return comments || []; }
+    return (comments || []).filter((c) => !dropped.has(c.url));
+  };
   const liveOrPaused = () => {
     const paused = listPaused();
     const pausedIds = new Set(paused.map((p) => p.ticket));
@@ -233,8 +241,8 @@ export function makeServer(opts = {}) {
     for (const p of prs) {
       const key = p.ticket || `PR-${p.number}`;
       const ex = byTicket.get(p.ticket);
-      if (ex) { ex.pr = p.url; ex.branch = p.branch; ex.comments = p.comments; ex.prNumber = p.number; if (!ex.item) ex.item = p.item; }
-      else byTicket.set(key, { ticket: key, project, state: 'in-review', title: caseTitle(p.ticket) || p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: p.comments, item: p.item, worktree: caseWorktree(p.ticket), ready: caseReady(p.ticket) });
+      if (ex) { ex.pr = p.url; ex.branch = p.branch; ex.comments = visibleComments(p.ticket, p.comments); ex.prNumber = p.number; if (!ex.item) ex.item = p.item; }
+      else byTicket.set(key, { ticket: key, project, state: 'in-review', title: caseTitle(p.ticket) || p.title, pr: p.url, branch: p.branch, prNumber: p.number, comments: visibleComments(p.ticket, p.comments), item: p.item, worktree: caseWorktree(p.ticket), ready: caseReady(p.ticket) });
     }
     // Sort attention-first (needs-you / failed on top), then by ticket (natural order).
     const rank = { 'needs-input': 0, failed: 1, working: 2, blocked: 3, stopped: 4, 'in-review': 5 };
@@ -328,6 +336,16 @@ export function makeServer(opts = {}) {
       const { ticket, commentUrls } = await readBody(req);
       if (!ticket) return json(res, 400, { error: 'ticket required' });
       writeFileSync(join(TMP, `deputy-hidden-${ticket}`), JSON.stringify({ urls: commentUrls || [] }));
+      return json(res, 200, { ok: true });
+    }
+    if (path === '/api/dismiss-comment' && req.method === 'POST') {
+      // Dismiss one comment by url (for the non-resolvable top-level/review-body kind).
+      const { ticket, url } = await readBody(req);
+      if (!ticket || !url) return json(res, 400, { error: 'ticket and url required' });
+      const f = join(TMP, `deputy-cmtdismiss-${ticket}`);
+      let urls = []; try { urls = JSON.parse(readFileSync(f, 'utf8')).urls || []; } catch {}
+      if (!urls.includes(url)) urls.push(url);
+      writeFileSync(f, JSON.stringify({ urls }));
       return json(res, 200, { ok: true });
     }
     if (path === '/api/auto' && req.method === 'POST') {

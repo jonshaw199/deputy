@@ -251,7 +251,7 @@ function renderDetails(target) {
   if (target.pr) {
     const cs = target.pr.comments || [];
     const body = cs.length
-      ? cs.map((c) => `<div class="cmt"><div class="who">@${esc(c.author)} <span class="loc">${esc(c.path)}${c.line ? ':' + c.line : ''}</span></div><div>${esc(c.body)}</div><a href="${c.url}" target="_blank">view</a></div>`).join('')
+      ? cs.map((c) => `<div class="cmt"><div class="who">@${esc(c.author)} <span class="loc">${esc(c.path)}${c.line ? ':' + c.line : ''}</span></div><div>${esc(c.body)}</div><a href="${c.url}" target="_blank">view</a> · <button class="linklike" data-dismiss-cmt="${esc(c.url)}">dismiss</button></div>`).join('')
       : `<div class="muted">No unresolved review comments.</div>`;
     s.push(`<div class="detail"><h4>Review comments${cs.length ? ` (${cs.length})` : ''}</h4>${body}${cs.length ? `<div class="muted" style="margin-top:6px">Tell Deputy what to fix on the left — it edits + pushes, never replies on the PR.</div>` : ''}</div>`);
   }
@@ -259,6 +259,12 @@ function renderDetails(target) {
   d.classList.remove('hidden');
   d.querySelectorAll('[data-copy]').forEach((b) => b.onclick = async () => {
     try { await navigator.clipboard.writeText(b.dataset.copy); const h = b.innerHTML; b.innerHTML = '✓'; setTimeout(() => { b.innerHTML = h; }, 1000); } catch {}
+  });
+  d.querySelectorAll('[data-dismiss-cmt]').forEach((b) => b.onclick = async () => {
+    const url = b.dataset.dismissCmt;
+    await api('/api/dismiss-comment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: target.ticket, url }) });
+    if (target.pr) target.pr.comments = (target.pr.comments || []).filter((c) => c.url !== url);
+    renderDetails(target); // re-render with the comment gone
   });
   const rb = d.querySelector('[data-retry]');
   if (rb) rb.onclick = async () => { await api('/api/rerun', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: target.ticket, project: target.project }) }); $('#logClose').click(); refresh(); };
