@@ -31,7 +31,7 @@ function openCaseModal(c) {
     ticket: c.ticket, state: c.state, project: c.project, item: c.item, phase: c.phase, question: c.question, worktree: c.worktree, ready: c.ready,
     live: c.state === 'working' || c.state === 'needs-input',
     needsInput: c.state === 'needs-input', blocked: c.state === 'blocked', failed: c.state === 'failed', stopped: c.state === 'stopped',
-    pr: c.pr ? { number: c.prNumber, title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] } : null,
+    pr: c.pr ? { number: c.prNumber || (String(c.pr).match(/\/pull\/(\d+)/) || [])[1], title: c.title, url: c.pr, branch: c.branch, ticket: c.ticket, comments: c.comments || [] } : null,
   }, c.title ? `${c.ticket} · ${c.title}` : c.ticket);
 }
 
