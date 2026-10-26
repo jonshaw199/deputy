@@ -20,6 +20,7 @@ DAEMON_BIN="$SCRIPT_DIR/daemon"
 RUNNER_PATH="$PROJECT_ROOT/lib/claude-agent-runner.mjs"
 TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
 PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
+ROUTE_CLI="$PROJECT_ROOT/lib/route.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -81,7 +82,9 @@ DAEMON_PID_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.pid"
 DAEMON_LOG_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.log"
 DAEMON_META_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.meta"
 PROCESSED_FILE="${RUNTIME_DIR}/deputy-processed-${PROJECT_NAME}.txt"   # CI failures already handled (pr:sha)
+ROUTED_FILE="${RUNTIME_DIR}/deputy-routed-${PROJECT_NAME}.txt"         # AI-routing verdicts (ticket:yes|no|multi|done)
 QUEUE_FILE="${RUNTIME_DIR}/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
+AI_ROUTING="${DEPUTY_AI_ROUTING:-false}"                              # one board, many repos: each Deputy self-selects its tickets
 PRS_FILE="${RUNTIME_DIR}/deputy-prs-${PROJECT_NAME}.json"             # open PRs + unresolved review comments
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
@@ -156,6 +159,27 @@ function status_daemon() {
   fi
 }
 
+# One shared board can feed several repos' Deputies. Each asks itself — grounded in its own
+# checkout — "is this ticket mine?" and only the right one(s) run with it. Verdicts are cached
+# per ticket so the model is consulted once, not every poll. Returns 0 to work the ticket.
+# Prints the cached verdict state (yes|multi) on stdout so the caller can tell sole from multi.
+function route_gate() {
+  local ticket=$1
+  local cached; cached=$(grep "^${ticket}:" "$ROUTED_FILE" 2>/dev/null | tail -1 | cut -d: -f2)
+  case "$cached" in
+    yes|multi) echo "$cached"; return 0 ;;
+    no|done)   return 1 ;;
+  esac
+  local repo_full; repo_full=$(cd "$MAIN_PROJECT_DIR" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
+  env -u CLAUDECODE DEPUTY_SDK_DIR="$AUTOMATION_BASE_DIR/node_modules" node "$ROUTE_CLI" "$repo_full" "$ticket" "$MAIN_PROJECT_DIR" >>"$DAEMON_LOG_FILE" 2>&1
+  case $? in
+    0)  echo "${ticket}:yes"   >> "$ROUTED_FILE"; echo yes;   return 0 ;;
+    10) echo "${ticket}:multi" >> "$ROUTED_FILE"; echo multi; return 0 ;;
+    3)  echo "${ticket}:no" >> "$ROUTED_FILE"; echo "[$(date)] UNROUTED: $ticket (no confident owner here: $PROJECT_NAME)" >> "$DAEMON_LOG_FILE"; return 1 ;;
+    *)  echo "${ticket}:no" >> "$ROUTED_FILE"; return 1 ;;
+  esac
+}
+
 function watch_and_process() {
   # SIGUSR1 (sent by `continue` / the dashboard) drains the queue immediately
   # instead of waiting for the next poll.
@@ -177,6 +201,10 @@ function watch_and_process() {
         local lock="${RUNTIME_DIR}/deputy-item-${ticket}.lock"
         if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then
           echo "[$(date)] $ticket already processing; skipping"
+          continue
+        fi
+        if [ "$AI_ROUTING" = "true" ] && ! route_gate "$ticket" >/dev/null; then
+          echo "[$(date)] $ticket not routed to $PROJECT_NAME; skipping"
           continue
         fi
         echo "[$(date)] Processing $ticket in background... (logs: ${RUNTIME_DIR}/deputy-item-${ticket}.log)"
@@ -822,10 +850,18 @@ function process_ticket() {
 
   echo "[$(date)] Starting work on $ticket_id" >> "$log_file"
 
-  # Mark started immediately so the next poll does not re-pick it.
-  echo "[$(date)] Marking $ticket_id started..." >> "$log_file"
-  node "$TRACKER_CLI" start "$ticket_id" >> "$log_file" 2>&1 \
-    || echo "[$(date)] WARN: markStarted failed for $ticket_id" >> "$log_file"
+  # Mark started immediately so the next poll does not re-pick it — EXCEPT a multi-repo ticket,
+  # whose label must stay so the other repos' Deputies can claim their slice too. Those cases are
+  # de-duped by the routed-file (":done" on success) instead of by label removal.
+  local route_state=""
+  [ "$AI_ROUTING" = "true" ] && route_state=$(grep "^${ticket_id}:" "$ROUTED_FILE" 2>/dev/null | tail -1 | cut -d: -f2)
+  if [ "$route_state" = "multi" ]; then
+    echo "[$(date)] Multi-repo ticket; leaving the label for other deputies." >> "$log_file"
+  else
+    echo "[$(date)] Marking $ticket_id started..." >> "$log_file"
+    node "$TRACKER_CLI" start "$ticket_id" >> "$log_file" 2>&1 \
+      || echo "[$(date)] WARN: markStarted failed for $ticket_id" >> "$log_file"
+  fi
 
   if ! cd "$MAIN_PROJECT_DIR"; then
     echo "[$(date)] FAILED: $ticket_id (cd failed)" >> "$DAEMON_LOG_FILE"
@@ -1007,6 +1043,13 @@ Work autonomously. When done, report the PR URL."
   fi
 
   echo "[$(date)] SUCCESS: $ticket_id" >> "$DAEMON_LOG_FILE"
+
+  # Multi-repo ticket kept its label (so sibling Deputies could claim); mark it done here so this
+  # Deputy won't re-pick it on the next poll.
+  if [ "$route_state" = "multi" ]; then
+    grep -v "^${ticket_id}:" "$ROUTED_FILE" > "${ROUTED_FILE}.tmp" 2>/dev/null; mv -f "${ROUTED_FILE}.tmp" "$ROUTED_FILE" 2>/dev/null
+    echo "${ticket_id}:done" >> "$ROUTED_FILE"
+  fi
 
   # Record a stacked PR so maintain_stacks keeps it rebased as the parent moves/merges.
   if [ -n "$stack_branch" ] && grep -qiE 'github\.com/[^ ]+/pull/[0-9]+' "$log_file"; then
