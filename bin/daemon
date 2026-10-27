@@ -82,9 +82,8 @@ DAEMON_PID_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.pid"
 DAEMON_LOG_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.log"
 DAEMON_META_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.meta"
 PROCESSED_FILE="${RUNTIME_DIR}/deputy-processed-${PROJECT_NAME}.txt"   # CI failures already handled (pr:sha)
-ROUTED_FILE="${RUNTIME_DIR}/deputy-routed-${PROJECT_NAME}.txt"         # AI-routing verdicts (ticket:yes|no|multi|done)
+ROUTED_FILE="${RUNTIME_DIR}/deputy-routed-${PROJECT_NAME}.txt"         # self-selection verdicts (ticket:yes|no|multi|done)
 QUEUE_FILE="${RUNTIME_DIR}/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
-AI_ROUTING="${DEPUTY_AI_ROUTING:-false}"                              # one board, many repos: each Deputy self-selects its tickets
 PRS_FILE="${RUNTIME_DIR}/deputy-prs-${PROJECT_NAME}.json"             # open PRs + unresolved review comments
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
@@ -203,7 +202,7 @@ function watch_and_process() {
           echo "[$(date)] $ticket already processing; skipping"
           continue
         fi
-        if [ "$AI_ROUTING" = "true" ] && ! route_gate "$ticket" >/dev/null; then
+        if ! route_gate "$ticket" >/dev/null; then
           echo "[$(date)] $ticket not routed to $PROJECT_NAME; skipping"
           continue
         fi
@@ -853,8 +852,7 @@ function process_ticket() {
   # Mark started immediately so the next poll does not re-pick it — EXCEPT a multi-repo ticket,
   # whose label must stay so the other repos' Deputies can claim their slice too. Those cases are
   # de-duped by the routed-file (":done" on success) instead of by label removal.
-  local route_state=""
-  [ "$AI_ROUTING" = "true" ] && route_state=$(grep "^${ticket_id}:" "$ROUTED_FILE" 2>/dev/null | tail -1 | cut -d: -f2)
+  local route_state; route_state=$(grep "^${ticket_id}:" "$ROUTED_FILE" 2>/dev/null | tail -1 | cut -d: -f2)
   if [ "$route_state" = "multi" ]; then
     echo "[$(date)] Multi-repo ticket; leaving the label for other deputies." >> "$log_file"
   else
