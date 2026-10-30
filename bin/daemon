@@ -777,9 +777,24 @@ function resolve_base_ref() {
 # (e.g. a sandbox network blip). The daemon's git/gh run OUTSIDE the agent sandbox, so they're
 # reliable. Pushes the branch and opens the draft PR. Returns 0 on success, 1 if nothing to do.
 function recover_pr() {
-  local ticket_id=$1 branch=$2 log_file=$3 stack_branch=$4
+  local ticket_id=$1 branch=$2 log_file=$3 stack_branch=$4 worktree=$5
   cd "$MAIN_PROJECT_DIR" || return 1
-  git show-ref --verify --quiet "refs/heads/$branch" || { echo "[$(date)] recover: no local branch $branch to push" >> "$log_file"; return 1; }
+  # Two failure shapes to rescue (the daemon runs outside the agent sandbox, so its git is reliable):
+  #   (a) agent committed to its branch but never pushed / opened the PR;
+  #   (b) agent wrote code but did NO git at all — uncommitted/untracked work on a detached HEAD in its
+  #       worktree. Commit it here so the work ships instead of being marked FAILED with the code left behind.
+  if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+    if [ -n "$worktree" ] && [ -d "$worktree" ] && [ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ]; then
+      echo "[$(date)] recover: agent left uncommitted work and no branch; committing it from the daemon" >> "$log_file"
+      local rtitle; rtitle=$(node "$TRACKER_CLI" title "$ticket_id" 2>/dev/null); [ -z "$rtitle" ] && rtitle="$ticket_id"
+      git -C "$worktree" checkout -b "$branch" >> "$log_file" 2>&1 \
+        && git -C "$worktree" add -A >> "$log_file" 2>&1 \
+        && git -C "$worktree" commit -m "feat: ${rtitle} [${ticket_id}]" >> "$log_file" 2>&1 \
+        || { echo "[$(date)] recover: could not commit worktree changes" >> "$log_file"; return 1; }
+    else
+      echo "[$(date)] recover: no local branch $branch and nothing uncommitted to rescue" >> "$log_file"; return 1
+    fi
+  fi
   echo "[$(date)] recover: pushing $branch + opening PR from the daemon (agent couldn't)" >> "$log_file"
   git push -u origin "$branch" >> "$log_file" 2>&1 || { echo "[$(date)] recover: push failed" >> "$log_file"; return 1; }
   local title; title=$(git log -1 --format=%s "$branch" 2>/dev/null); [ -z "$title" ] && title="$ticket_id"
@@ -1021,7 +1036,7 @@ Work autonomously. When done, report the PR URL."
   # Self-correct: if the agent finished the code but never got a PR up, the daemon pushes the
   # branch + opens the PR itself (it runs outside the agent's sandbox, so the push is reliable).
   if [ "$made_pr" -eq 0 ]; then
-    if recover_pr "$ticket_id" "$branch_name" "$log_file" "$stack_branch"; then made_pr=1; fi
+    if recover_pr "$ticket_id" "$branch_name" "$log_file" "$stack_branch" "$ticket_worktree"; then made_pr=1; fi
   fi
 
   local failed=0 reason=""
@@ -1134,11 +1149,12 @@ committed."
   # else keep the worktree and mark it failed (visible) instead of silently deleting it.
   local made_pr=0
   grep -qiE 'github\.com/[^ ]+/pull/[0-9]+' "$log_file" && made_pr=1
-  local jbranch jstack
+  local jbranch jstack jwt
   jbranch=$(jq -r '.branch // empty' "$jf" 2>/dev/null)
   jstack=$(jq -r '.stack_branch // empty' "$jf" 2>/dev/null)
+  jwt=$(jq -r '.worktree // empty' "$jf" 2>/dev/null)
   if [ "$made_pr" -eq 0 ] && [ -n "$jbranch" ]; then
-    recover_pr "$ticket_id" "$jbranch" "$log_file" "$jstack" && made_pr=1
+    recover_pr "$ticket_id" "$jbranch" "$log_file" "$jstack" "$jwt" && made_pr=1
   fi
 
   if [ $exit_code -ne 0 ] && [ "$made_pr" -eq 0 ]; then
@@ -1174,7 +1190,7 @@ function resume_or_restart() {
     resume_ticket "$ticket_id" "__continue__"; return
   fi
   echo "$PROJECT_NAME" > "${RUNTIME_DIR}/deputy-item-${ticket_id}.meta"
-  if [ -n "$branch" ] && recover_pr "$ticket_id" "$branch" "$log_file" "$stack"; then
+  if [ -n "$branch" ] && recover_pr "$ticket_id" "$branch" "$log_file" "$stack" "$wt"; then
     echo "[$(date)] Re-run: finished $ticket_id's PR without a full re-run" >> "$DAEMON_LOG_FILE"
     clear_journal "$ticket_id"; rm -f "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" "${RUNTIME_DIR}/deputy-item-${ticket_id}.meta"; return
   fi
