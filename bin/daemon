@@ -21,6 +21,7 @@ RUNNER_PATH="$PROJECT_ROOT/lib/claude-agent-runner.mjs"
 TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
 PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
 ROUTE_CLI="$PROJECT_ROOT/lib/route.mjs"
+VERIFY_CLI="$PROJECT_ROOT/lib/verify.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -811,6 +812,35 @@ function recover_pr() {
   return 0
 }
 
+# Evaluator-Optimizer loop (Anthropic, "Building Effective Agents"): a SEPARATE skeptical pass
+# (verify.mjs) judges the work against the ticket's acceptance criteria, grounded in the real diff —
+# not the builder's say-so. If gaps remain, resume the builder with those exact gaps and re-check,
+# bounded by DEPUTY_VERIFY_MAX. Catches the two failure modes we hit: the builder quitting early
+# (gaps fed back) and skipping git (no-PR is a gap). recover_pr remains the floor if it never converges.
+function verify_and_optimize() {
+  local ticket_id=$1 worktree=$2 log_file=$3 input_file=$4 ask_file=$5 session_file=$6
+  [ "${DEPUTY_VERIFY:-true}" = "true" ] || return 0
+  [ -f "$ask_file" ] && return 0   # parked on a question; don't verify
+  local vmax="${DEPUTY_VERIFY_MAX:-2}" vi=0
+  while [ "$vi" -lt "$vmax" ]; do
+    local verdict vrc gaps
+    verdict=$(env -u CLAUDECODE DEPUTY_SDK_DIR="$AUTOMATION_BASE_DIR/node_modules" node "$VERIFY_CLI" "$ticket_id" "$worktree" 2>>"$DAEMON_LOG_FILE")
+    vrc=$?
+    echo "[$(date)] verify #$((vi+1))/$vmax (rc=$vrc): $verdict" >> "$log_file"
+    [ "$vrc" -eq 0 ] && return 0                         # evaluator says done
+    gaps=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log((JSON.parse(s).gaps||[]).map(g=>"- "+g).join("\n"))}catch{}})' 2>/dev/null)
+    [ -z "$gaps" ] && return 0                           # no actionable gaps; let the normal flow arbitrate
+    echo "[$(date)] verify: resuming builder to close gaps (#$((vi+1))/$vmax)" >> "$log_file"
+    run_agent "$worktree" "A skeptical review found this work is NOT complete. Address ALL of these gaps, then commit and open or update the draft PR:
+${gaps}
+
+Do not stop until every gap is resolved and the PR is up." "$log_file" "$input_file" "$ask_file" "$session_file" "$(cat "$session_file" 2>/dev/null)"
+    [ -f "$ask_file" ] && return 0                       # builder parked mid-fix
+    vi=$((vi + 1))
+  done
+  return 0
+}
+
 # Prints the head branch of this ticket's open PR (any name), or empty. Name-agnostic, so it
 # finds a manually-created branch Claude took over, not just Deputy's own naming.
 function ticket_pr_branch() {
@@ -1022,6 +1052,10 @@ Work autonomously. When done, report the PR URL."
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"
     return 0
   fi
+
+  # Evaluator-Optimizer: a separate skeptical pass checks the work against the ticket's acceptance
+  # criteria and resumes the builder to close any gaps, before we judge success below.
+  verify_and_optimize "$ticket_id" "$ticket_worktree" "$log_file" "$input_file" "$ask_file" "$session_file"
 
   # A run only "succeeded" if it actually produced a PR. No PR = failure, even on a clean exit —
   # we must NEVER call a run success and let the case vanish silently.
