@@ -811,6 +811,48 @@ function worktree_for_branch() {
     | grep -v "^$MAIN_PROJECT_DIR\$" | head -1
 }
 
+# The set of files the agent actually authored this run — the paths from its Write/Edit tool calls
+# (NOT Read), made repo-relative. This is "what's relevant to the ticket": anything else dirty in the
+# worktree (structure.sql, lockfiles, any generated/environmental file in any repo) was produced by
+# setup or tests, not authored by the agent, and must not be committed. Fully generic — no file names.
+function agent_edited_files() {
+  local log_file=$1 worktree=$2
+  [ -f "$log_file" ] || return 0
+  awk '
+    /━━━ \[(Write|Edit)\] ━━━/ { w=1; next }
+    w { if (match($0, /"file_path":"[^"]+"/)) print substr($0, RSTART+13, RLENGTH-14); w=0 }
+  ' "$log_file" 2>/dev/null | grep -F "$worktree/" | sed "s|^${worktree}/||" | sort -u
+}
+
+# Drop anything committed on the branch that the agent did not author (generated/environmental drift).
+# Restores each stray file to its base state and pushes a cleanup commit. No-op when we can't tell what
+# the agent authored (empty set) so we never strip real work.
+function sanitize_committed_branch() {
+  local ticket_id=$1 worktree=$2 log_file=$3 branch=$4 base_ref=$5
+  [ -d "$worktree" ] || return 0
+  local edited; edited=$(agent_edited_files "$log_file" "$worktree")
+  [ -z "$edited" ] && return 0
+  ( cd "$worktree" && git fetch origin "$base_ref" >/dev/null 2>&1 )
+  local strays=0 f
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    printf '%s\n' "$edited" | grep -qxF "$f" && continue      # agent authored it: keep
+    if ( cd "$worktree" && git cat-file -e "origin/$base_ref:$f" 2>/dev/null ); then
+      ( cd "$worktree" && git checkout "origin/$base_ref" -- "$f" 2>/dev/null )   # revert to base
+    else
+      ( cd "$worktree" && git rm -f --cached -- "$f" >/dev/null 2>&1; rm -f "$f" 2>/dev/null )  # agent-added, not authored
+    fi
+    echo "[$(date)] sanitize: dropped unrelated file from $branch: $f" >> "$log_file"
+    strays=1
+  done < <(cd "$worktree" && git diff --name-only "origin/$base_ref...HEAD" 2>/dev/null)
+  [ "$strays" = 0 ] && return 0
+  ( cd "$worktree" \
+      && git add -A >/dev/null 2>&1 \
+      && git commit -m "chore: drop files not part of [$ticket_id]" >/dev/null 2>&1 \
+      && { git push --force-with-lease origin "$branch" >/dev/null 2>&1 || git push origin "$branch" >/dev/null 2>&1; } )
+  echo "[$(date)] sanitize: pushed cleanup of unrelated files on $branch" >> "$DAEMON_LOG_FILE"
+}
+
 # resolve_base_ref <ticket_id> <log_file>
 # Decides what a ticket's work should be based on, from its blockers' PR state.
 # Prints exactly one line: "MAIN", "WAIT|<reason>", or "STACK|<parent_ticket>|<parent_branch>".
@@ -862,9 +904,15 @@ function recover_pr() {
     if [ -n "$worktree" ] && [ -d "$worktree" ] && [ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ]; then
       echo "[$(date)] recover: agent left uncommitted work and no branch; committing it from the daemon" >> "$log_file"
       local rtitle; rtitle=$(node "$TRACKER_CLI" title "$ticket_id" 2>/dev/null); [ -z "$rtitle" ] && rtitle="$ticket_id"
-      git -C "$worktree" checkout -b "$branch" >> "$log_file" 2>&1 \
-        && git -C "$worktree" add -A >> "$log_file" 2>&1 \
-        && git -C "$worktree" commit -m "feat: ${rtitle} [${ticket_id}]" >> "$log_file" 2>&1 \
+      git -C "$worktree" checkout -b "$branch" >> "$log_file" 2>&1 || { echo "[$(date)] recover: branch create failed" >> "$log_file"; return 1; }
+      # Stage only what the agent authored (not setup/test-generated drift); fall back to everything if unknown.
+      local edited; edited=$(agent_edited_files "$log_file" "$worktree")
+      if [ -n "$edited" ]; then
+        while IFS= read -r f; do [ -n "$f" ] && git -C "$worktree" add -- "$f" >> "$log_file" 2>&1; done <<< "$edited"
+      else
+        git -C "$worktree" add -A >> "$log_file" 2>&1
+      fi
+      git -C "$worktree" commit -m "feat: ${rtitle} [${ticket_id}]" >> "$log_file" 2>&1 \
         || { echo "[$(date)] recover: could not commit worktree changes" >> "$log_file"; return 1; }
     else
       echo "[$(date)] recover: no local branch $branch and nothing uncommitted to rescue" >> "$log_file"; return 1
@@ -1162,6 +1210,10 @@ Work autonomously. When done, report the PR URL."
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"   # keep the worktree
     return 0
   fi
+
+  # Keep the PR to only what the agent authored — strip generated/environmental drift (structure.sql,
+  # lockfiles, etc.) that setup/tests regenerated and the agent swept in.
+  sanitize_committed_branch "$ticket_id" "$ticket_worktree" "$log_file" "$branch_name" "${stack_branch:-main}"
 
   echo "[$(date)] SUCCESS: $ticket_id" >> "$DAEMON_LOG_FILE"
 
