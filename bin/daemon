@@ -22,6 +22,7 @@ TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
 PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
 ROUTE_CLI="$PROJECT_ROOT/lib/route.mjs"
 VERIFY_CLI="$PROJECT_ROOT/lib/verify.mjs"
+RELEVANCE_CLI="$PROJECT_ROOT/lib/relevance.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -886,6 +887,58 @@ function recover_pr() {
   return 0
 }
 
+# The files the agent authored this run — paths from its Write/Edit tool calls (NOT Read), repo-relative.
+function agent_edited_files() {
+  local log_file=$1 worktree=$2
+  [ -f "$log_file" ] || return 0
+  awk '
+    /━━━ \[(Write|Edit)\] ━━━/ { w=1; next }
+    w { if (match($0, /"file_path":"[^"]+"/)) print substr($0, RSTART+13, RLENGTH-14); w=0 }
+  ' "$log_file" 2>/dev/null | grep -F "$worktree/" | sed "s|^${worktree}/||" | sort -u
+}
+
+# Commit-time relevance (Evaluator-Optimizer, hybrid): runs ONCE when a case succeeds — never as a
+# watcher, so it cannot self-trigger or loop. Keeps the agent's authored files deterministically; hands
+# only the LEFTOVER changed files (setup/test drift the agent didn't write) to the AI judge, which names
+# the ones to drop. Dropped files are restored to base and a single cleanup commit is pushed.
+function finalize_relevance() {
+  local ticket_id=$1 worktree=$2 log_file=$3 branch=$4 base_ref=$5
+  [ "${DEPUTY_RELEVANCE:-true}" = "true" ] || return 0
+  [ -d "$worktree" ] || return 0
+  ( cd "$worktree" && git fetch origin "$base_ref" >/dev/null 2>&1 )
+  local changed; changed=$(cd "$worktree" && git diff --name-only "origin/$base_ref...HEAD" 2>/dev/null)
+  [ -z "$changed" ] && return 0
+  local authored; authored=$(agent_edited_files "$log_file" "$worktree")
+  # leftovers = changed files the agent did NOT author
+  local leftovers; leftovers=$(comm -23 <(printf '%s\n' "$changed" | sort -u) <(printf '%s\n' "$authored" | sort -u))
+  [ -z "$leftovers" ] && return 0
+  local drop; drop=$(printf '%s\n' "$leftovers" | env -u CLAUDECODE DEPUTY_SDK_DIR="$AUTOMATION_BASE_DIR/node_modules" node "$RELEVANCE_CLI" "$ticket_id" "$worktree" "origin/$base_ref" 2>>"$DAEMON_LOG_FILE" \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log((JSON.parse(s).drop||[]).join("\n"))}catch{}})' 2>/dev/null)
+  [ -z "$drop" ] && { echo "[$(date)] relevance: all changes belong; nothing dropped" >> "$log_file"; return 0; }
+
+  echo "[$(date)] relevance: dropping unrelated: $(echo "$drop" | tr '\n' ' ')" >> "$log_file"
+  local f
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if git -C "$worktree" cat-file -e "origin/$base_ref:$f" 2>/dev/null; then
+      git -C "$worktree" checkout "origin/$base_ref" -- "$f" 2>/dev/null
+    else
+      git -C "$worktree" rm -f -- "$f" >/dev/null 2>&1
+    fi
+  done <<< "$drop"
+  if [ -z "$(git -C "$worktree" status --porcelain)" ]; then
+    echo "[$(date)] relevance: restore produced no change (skipped)" >> "$log_file"; return 0
+  fi
+  git -C "$worktree" add -A >/dev/null 2>&1
+  git -C "$worktree" commit -m "chore: keep only ticket-relevant changes [$ticket_id]" >/dev/null 2>&1
+  local perr
+  if perr=$(git -C "$worktree" push origin "HEAD:$branch" 2>&1); then
+    echo "[$(date)] relevance: cleaned + pushed" >> "$log_file"
+  else
+    echo "[$(date)] relevance: push failed: $(echo "$perr" | tail -1)" >> "$log_file"
+  fi
+}
+
 # Evaluator-Optimizer loop (Anthropic, "Building Effective Agents"): a SEPARATE skeptical pass
 # (verify.mjs) judges the work against the ticket's acceptance criteria, grounded in the real diff —
 # not the builder's say-so. If gaps remain, resume the builder with those exact gaps and re-check,
@@ -1162,6 +1215,10 @@ Work autonomously. When done, report the PR URL."
     trap - EXIT; rm -f "$lock_file" "$input_file" "$meta_file"   # keep the worktree
     return 0
   fi
+
+  # Commit-time relevance (runs ONCE here, not as a watcher): keep the agent's authored files, drop
+  # leftover setup/test drift. Loop-proof because nothing re-enters this after the case finishes.
+  finalize_relevance "$ticket_id" "$ticket_worktree" "$log_file" "$branch_name" "${stack_branch:-main}"
 
   echo "[$(date)] SUCCESS: $ticket_id" >> "$DAEMON_LOG_FILE"
 
