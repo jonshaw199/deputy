@@ -84,6 +84,7 @@ DAEMON_PID_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.pid"
 DAEMON_LOG_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.log"
 DAEMON_META_FILE="${RUNTIME_DIR}/deputy-${PROJECT_NAME}.meta"
 PROCESSED_FILE="${RUNTIME_DIR}/deputy-processed-${PROJECT_NAME}.txt"   # CI failures already handled (pr:sha)
+CIFIX_FILE="${RUNTIME_DIR}/deputy-cifix-${PROJECT_NAME}.txt"           # per-branch CI-fix attempt counter (anti-thrash cap)
 ROUTED_FILE="${RUNTIME_DIR}/deputy-routed-${PROJECT_NAME}.txt"         # self-selection verdicts (ticket:yes|no|multi|done)
 QUEUE_FILE="${RUNTIME_DIR}/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
 PRS_FILE="${RUNTIME_DIR}/deputy-prs-${PROJECT_NAME}.json"             # open PRs + unresolved review comments
@@ -432,11 +433,26 @@ function check_for_ci_failures() {
     local failed; failed=$(echo "$checks" | jq '[.[]|select(.state=="FAIL" or .state=="FAILURE")]|length' 2>/dev/null || echo 0)
     { [ "$pending" -gt 0 ] || [ "$failed" -gt 0 ]; } && echo "[$(date)] CI check PR #$pr_number (${branch_name}): pending=$pending failed=$failed" >> "$DAEMON_LOG_FILE"
     [ "$pending" -gt 0 ] && continue
-    [ "$failed" -eq 0 ] && continue
+    # Green again — clear this branch's fix-attempt counter so a future genuine failure starts fresh.
+    [ "$failed" -eq 0 ] && { grep -v "^${branch_name}:" "$CIFIX_FILE" > "${CIFIX_FILE}.tmp" 2>/dev/null && mv -f "${CIFIX_FILE}.tmp" "$CIFIX_FILE"; continue; }
+
+    # Anti-thrash: each fix pushes a new sha, so the per-sha guard can't stop a fix->push->still-red loop
+    # (classic during a GitHub Actions outage, where "failures" aren't real). Cap fixes per BRANCH; past the
+    # cap, back off and leave it for a human instead of burning agents chasing a red that won't go green.
+    local ci_attempts; ci_attempts=$(grep "^${branch_name}:" "$CIFIX_FILE" 2>/dev/null | tail -1 | cut -d: -f2); ci_attempts=${ci_attempts:-0}
+    if [ "$ci_attempts" -ge "${DEPUTY_CI_FIX_MAX:-2}" ]; then
+      grep -qF "backoff:${branch_name}" "$PROCESSED_FILE" 2>/dev/null || {
+        echo "backoff:${branch_name}" >> "$PROCESSED_FILE"
+        echo "[$(date)] CI auto-fix: PR #$pr_number hit the fix cap (${ci_attempts}); backing off — likely infra/outage or needs a human" >> "$DAEMON_LOG_FILE"
+      }
+      continue
+    fi
 
     echo "$key" >> "$PROCESSED_FILE"
+    grep -v "^${branch_name}:" "$CIFIX_FILE" > "${CIFIX_FILE}.tmp" 2>/dev/null; mv -f "${CIFIX_FILE}.tmp" "$CIFIX_FILE" 2>/dev/null
+    echo "${branch_name}:$((ci_attempts + 1))" >> "$CIFIX_FILE"
     local ticket_id; ticket_id=$(echo "$branch_name" | sed 's|.*/||' | tr '[:lower:]' '[:upper:]')
-    echo "[$(date)] CI auto-fix: PR #$pr_number ($ticket_id) has $failed failed checks at ${commit_sha:0:8}" >> "$DAEMON_LOG_FILE"
+    echo "[$(date)] CI auto-fix: PR #$pr_number ($ticket_id) has $failed failed checks at ${commit_sha:0:8} (attempt $((ci_attempts + 1))/${DEPUTY_CI_FIX_MAX:-2})" >> "$DAEMON_LOG_FILE"
 
     local summary; summary=$(echo "$checks" | jq -r '.[]|select(.state=="FAIL" or .state=="FAILURE")|"- \(.name): \(.link // "")"')
     local repo; repo=$(cd "$MAIN_PROJECT_DIR" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
