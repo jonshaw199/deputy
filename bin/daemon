@@ -223,6 +223,9 @@ function watch_and_process() {
     # Keep standalone PRs merge-ready: rebase + resolve when one conflicts with its base.
     check_for_conflicts
 
+    # Keep open PRs from drifting too far behind their base (time-based; clean rebase, no agent).
+    freshen_stale_branches
+
     # Remove Deputy's worktrees whose PR merged/closed (kept until then for local testing).
     prune_merged_worktrees
 
@@ -514,6 +517,77 @@ If you cannot resolve safely, run \`git rebase --abort\`, do NOT push, and clear
 
     local clock="${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-conflict-${commit_sha:0:8}.lock"
     continue_ticket "$ticket_id" "$prompt" "conflict-${commit_sha:0:8}" "$branch_name" rebase & echo $! > "$clock"
+  done <<< "$rows"
+}
+
+# Keep open PRs from drifting too far behind their base. Staleness is measured in TIME, not a fixed
+# commit count (20 commits is hours in a busy repo, weeks in a quiet one): a branch is stale when its
+# fork point is more than DEPUTY_FRESHEN_MAX_DAYS of base history old. A clean rebase is mechanical, so
+# the daemon does it directly (no agent, no tokens); anything that conflicts is left for the conflict
+# watcher. Gated per head sha so each drift is handled once, not re-pushed every poll (which would thrash
+# CI). Global default in .env, overridable per-repo via that repo's .env.local.
+function freshen_stale_branches() {
+  [ "${DEPUTY_FRESHEN:-true}" = "true" ] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  local max_days="${DEPUTY_FRESHEN_MAX_DAYS:-2}"
+  local pr_list
+  pr_list=$(cd "$MAIN_PROJECT_DIR" && gh pr list --state open --label "$PR_LABEL" --json number,headRefName,headRefOid,baseRefName,mergeable 2>/dev/null) || return 0
+  local rows
+  # Skip CONFLICTING (the conflict watcher owns those) and UNKNOWN (GitHub still computing).
+  rows=$(echo "$pr_list" | jq -r '.[] | select(.mergeable=="MERGEABLE") | [(.number|tostring), .headRefName, .headRefOid, .baseRefName] | @tsv' 2>/dev/null)
+  [ -z "$rows" ] && return 0
+  cd "$MAIN_PROJECT_DIR" || return 0
+
+  while IFS=$'\t' read -r pr_number branch_name commit_sha base_ref; do
+    [ -z "$pr_number" ] && continue
+    local key="freshen:${pr_number}:${commit_sha}"
+    grep -qF "$key" "$PROCESSED_FILE" 2>/dev/null && continue
+
+    git fetch origin "$base_ref" "$branch_name" >/dev/null 2>&1
+    local mb base_t mb_t days
+    mb=$(git merge-base "origin/$base_ref" "origin/$branch_name" 2>/dev/null)
+    [ -z "$mb" ] && continue
+    base_t=$(git show -s --format=%ct "origin/$base_ref" 2>/dev/null)
+    mb_t=$(git show -s --format=%ct "$mb" 2>/dev/null)
+    { [ -z "$base_t" ] || [ -z "$mb_t" ]; } && continue
+    days=$(( (base_t - mb_t) / 86400 ))
+    [ "$days" -lt "$max_days" ] && continue
+
+    local ticket_id; ticket_id=$(echo "$branch_name" | sed 's|.*/||' | tr '[:lower:]' '[:upper:]')
+    # maintain_stacks owns stacked branches; don't touch a busy/parked/blocked case or a human's worktree.
+    [ -f "$(stack_record "$ticket_id")" ] && continue
+    { [ -f "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" ] && kill -0 "$(cat "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" 2>/dev/null)" 2>/dev/null; } && continue
+    local alive=0 cl
+    for cl in ${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-*.lock; do
+      [ -e "$cl" ] || continue; kill -0 "$(cat "$cl" 2>/dev/null)" 2>/dev/null && { alive=1; break; }
+    done
+    [ "$alive" = 1 ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-ask-${ticket_id}.txt" ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-blocked-${ticket_id}.meta" ] && continue
+    local cwt; cwt=$(worktree_for_branch "$branch_name")
+    { [ -n "$cwt" ] && [[ "$cwt" != "${AUTOMATION_BASE_DIR}_"* ]]; } && continue
+
+    echo "$key" >> "$PROCESSED_FILE"
+    echo "[$(date)] Freshen: PR #$pr_number ($ticket_id) forked ~${days}d behind $base_ref; rebasing (daemon)" >> "$DAEMON_LOG_FILE"
+
+    # Rebase in Deputy's kept worktree if it has one, else a throwaway worktree.
+    local wt="$cwt" temp=0
+    if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+      wt="${AUTOMATION_BASE_DIR}_${ticket_id}_freshen"; temp=1
+      git worktree remove --force "$wt" 2>/dev/null; rm -rf "$wt" 2>/dev/null
+      git worktree add --force "$wt" "$branch_name" >/dev/null 2>&1 || { git worktree prune 2>/dev/null; continue; }
+    fi
+    if ( cd "$wt" && git rebase "origin/$base_ref" >/dev/null 2>&1 ); then
+      if ( cd "$wt" && git push --force-with-lease origin "$branch_name" >/dev/null 2>&1 ); then
+        echo "[$(date)] Freshen: PR #$pr_number rebased onto $base_ref + pushed" >> "$DAEMON_LOG_FILE"
+      else
+        echo "[$(date)] Freshen: PR #$pr_number rebase ok but push failed (will retry next drift)" >> "$DAEMON_LOG_FILE"
+      fi
+    else
+      ( cd "$wt" && git rebase --abort >/dev/null 2>&1 )
+      echo "[$(date)] Freshen: PR #$pr_number rebase hit conflicts; leaving it for the conflict watcher" >> "$DAEMON_LOG_FILE"
+    fi
+    [ "$temp" = 1 ] && { git worktree remove --force "$wt" 2>/dev/null; git worktree prune 2>/dev/null; }
   done <<< "$rows"
 }
 
