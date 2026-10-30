@@ -22,6 +22,7 @@ TRACKER_CLI="$PROJECT_ROOT/lib/tracker-cli.mjs"
 PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
 ROUTE_CLI="$PROJECT_ROOT/lib/route.mjs"
 VERIFY_CLI="$PROJECT_ROOT/lib/verify.mjs"
+RELEVANCE_CLI="$PROJECT_ROOT/lib/relevance.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -225,6 +226,9 @@ function watch_and_process() {
 
     # Keep open PRs from drifting too far behind their base (time-based; clean rebase, no agent).
     freshen_stale_branches
+
+    # Strip changes that don't belong to the ticket (setup/test drift) — AI judges, daemon cleans.
+    check_for_unrelated_changes
 
     # Remove Deputy's worktrees whose PR merged/closed (kept until then for local testing).
     prune_merged_worktrees
@@ -588,6 +592,68 @@ function freshen_stale_branches() {
       echo "[$(date)] Freshen: PR #$pr_number rebase hit conflicts; leaving it for the conflict watcher" >> "$DAEMON_LOG_FILE"
     fi
     [ "$temp" = 1 ] && { git worktree remove --force "$wt" 2>/dev/null; git worktree prune 2>/dev/null; }
+  done <<< "$rows"
+}
+
+# Watch open PRs for changes that don't belong to the ticket (setup/test drift like a regenerated schema
+# dump or lockfile that got swept in). An AI judge (relevance.mjs) reads the ticket + the PR diff and names
+# the unrelated files; the daemon then restores those files to base and pushes a cleanup — mechanical, no
+# agent. Relevance is a per-PR judgment (not a file list), so a schema dump that belongs with a migration
+# the ticket added is kept. Gated per head sha so each version is judged once.
+function check_for_unrelated_changes() {
+  [ "${DEPUTY_RELEVANCE_CHECK:-true}" = "true" ] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  local pr_list
+  pr_list=$(cd "$MAIN_PROJECT_DIR" && gh pr list --state open --label "$PR_LABEL" --json number,headRefName,headRefOid,baseRefName 2>/dev/null) || return 0
+  local rows
+  rows=$(echo "$pr_list" | jq -r '.[] | [(.number|tostring), .headRefName, .headRefOid, .baseRefName] | @tsv' 2>/dev/null)
+  [ -z "$rows" ] && return 0
+
+  while IFS=$'\t' read -r pr_number branch_name commit_sha base_ref; do
+    [ -z "$pr_number" ] && continue
+    local key="relevance:${pr_number}:${commit_sha}"
+    grep -qF "$key" "$PROCESSED_FILE" 2>/dev/null && continue
+
+    local ticket_id; ticket_id=$(echo "$branch_name" | sed 's|.*/||' | tr '[:lower:]' '[:upper:]')
+    { [ -f "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" ] && kill -0 "$(cat "${RUNTIME_DIR}/deputy-item-${ticket_id}.lock" 2>/dev/null)" 2>/dev/null; } && continue
+    local alive=0 cl
+    for cl in ${RUNTIME_DIR}/deputy-item-${ticket_id}-cont-*.lock; do
+      [ -e "$cl" ] || continue; kill -0 "$(cat "$cl" 2>/dev/null)" 2>/dev/null && { alive=1; break; }
+    done
+    [ "$alive" = 1 ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-ask-${ticket_id}.txt" ] && continue
+    local cwt; cwt=$(worktree_for_branch "$branch_name")
+    { [ -n "$cwt" ] && [[ "$cwt" != "${AUTOMATION_BASE_DIR}_"* ]]; } && continue
+
+    echo "$key" >> "$PROCESSED_FILE"
+    local unrelated
+    unrelated=$(cd "$MAIN_PROJECT_DIR" && env -u CLAUDECODE DEPUTY_SDK_DIR="$AUTOMATION_BASE_DIR/node_modules" node "$RELEVANCE_CLI" "$ticket_id" "$pr_number" 2>>"$DAEMON_LOG_FILE" \
+      | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log((JSON.parse(s).unrelated||[]).join("\n"))}catch{}})' 2>/dev/null)
+    [ -z "$unrelated" ] && continue
+
+    echo "[$(date)] Relevance: PR #$pr_number ($ticket_id) has unrelated changes; stripping: $(echo "$unrelated" | tr '\n' ' ')" >> "$DAEMON_LOG_FILE"
+    local wt="$cwt" temp=0
+    if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+      wt="${AUTOMATION_BASE_DIR}_${ticket_id}_relevance"; temp=1
+      git -C "$MAIN_PROJECT_DIR" worktree remove --force "$wt" 2>/dev/null; rm -rf "$wt" 2>/dev/null
+      git -C "$MAIN_PROJECT_DIR" worktree add --force "$wt" "$branch_name" >/dev/null 2>&1 || { git -C "$MAIN_PROJECT_DIR" worktree prune 2>/dev/null; continue; }
+    fi
+    ( cd "$wt" && git fetch origin "$base_ref" >/dev/null 2>&1 )
+    local f
+    while IFS= read -r f; do
+      [ -z "$f" ] && continue
+      if ( cd "$wt" && git cat-file -e "origin/$base_ref:$f" 2>/dev/null ); then
+        ( cd "$wt" && git checkout "origin/$base_ref" -- "$f" 2>/dev/null )
+      else
+        ( cd "$wt" && git rm -f -- "$f" >/dev/null 2>&1 )
+      fi
+    done <<< "$unrelated"
+    ( cd "$wt" \
+        && git add -A >/dev/null 2>&1 \
+        && git commit -m "chore: drop changes unrelated to [$ticket_id]" >/dev/null 2>&1 \
+        && { git push --force-with-lease origin "$branch_name" >/dev/null 2>&1 || git push origin "$branch_name" >/dev/null 2>&1; } ) \
+      && echo "[$(date)] Relevance: PR #$pr_number cleaned + pushed" >> "$DAEMON_LOG_FILE"
+    [ "$temp" = 1 ] && { git -C "$MAIN_PROJECT_DIR" worktree remove --force "$wt" 2>/dev/null; git -C "$MAIN_PROJECT_DIR" worktree prune 2>/dev/null; }
   done <<< "$rows"
 }
 
