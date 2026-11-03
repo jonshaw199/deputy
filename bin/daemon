@@ -654,8 +654,9 @@ function resync_stack() {
     git -C "$wt" reset --hard "origin/$child_branch" >> "$log_file" 2>&1 || true
   fi
 
-  # Retarget the PR base first (idempotent); the diff tidies once the rebased branch lands.
-  [ "$mode" = "retarget" ] && { (cd "$MAIN_PROJECT_DIR" && gh pr edit "$child_branch" --base main >> "$log_file" 2>&1) || true; }
+  # Retarget the PR base first (idempotent), then reopen it if GitHub closed it when the parent branch
+  # was deleted (base_ref_deleted). Both no-op when already correct; the diff tidies once the rebase lands.
+  [ "$mode" = "retarget" ] && { (cd "$MAIN_PROJECT_DIR" && gh pr edit "$child_branch" --base main >> "$log_file" 2>&1; gh pr reopen "$child_branch" >> "$log_file" 2>&1) || true; }
 
   if git -C "$wt" rebase --onto "$newbase_ref" "$oldbase" >> "$log_file" 2>&1; then
     git -C "$wt" push --force-with-lease origin "$child_branch" >> "$log_file" 2>&1
@@ -743,9 +744,11 @@ function maintain_stacks() {
     local cwt; cwt=$(worktree_for_branch "$child_branch")
     { [ -n "$cwt" ] && [[ "$cwt" != "${AUTOMATION_BASE_DIR}_"* ]]; } && continue
 
-    # Child PR gone/merged -> stack is done.
-    local child_open; child_open=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$child_branch" --state open --json number --jq 'length' 2>/dev/null)
-    if [ "${child_open:-0}" = "0" ]; then rm -f "$sf"; continue; fi
+    # Reconcile the child to its desired state, judging by state not transitions so a timing race can't
+    # strand it. MERGED or no PR = truly done -> drop the record. A child GitHub auto-closed when the
+    # parent merged and its branch was deleted is NOT done; the parent-merged branch below reopens it.
+    local child_state; child_state=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$child_branch" --state all --json state --jq '.[0].state // "NONE"' 2>/dev/null)
+    { [ "$child_state" = "MERGED" ] || [ "$child_state" = "NONE" ]; } && { rm -f "$sf"; continue; }
 
     local parent_json; parent_json=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$parent_branch" --state all --json state,headRefOid --jq '.[0] // {}' 2>/dev/null)
     local pstate psha
@@ -753,8 +756,10 @@ function maintain_stacks() {
     psha=$(echo "$parent_json" | jq -r '.headRefOid // empty' 2>/dev/null)
 
     if [ "$pstate" = "MERGED" ]; then
+      # Parent merged -> child belongs open on main. retarget mode reopens it if GitHub closed it on the
+      # parent's branch deletion, retargets to main, rebases, and clears the record.
       resync_stack "$ticket" "$parent_branch" "$child_branch" "$oldbase" "origin/main" retarget & echo $! > "$synclock"
-    elif [ "$pstate" = "OPEN" ] && [ -n "$psha" ] && [ "$psha" != "$oldbase" ]; then
+    elif [ "$child_state" = "OPEN" ] && [ "$pstate" = "OPEN" ] && [ -n "$psha" ] && [ "$psha" != "$oldbase" ]; then
       resync_stack "$ticket" "$parent_branch" "$child_branch" "$oldbase" "origin/$parent_branch" update & echo $! > "$synclock"
     fi
   done
