@@ -29,6 +29,8 @@ section { margin-bottom: 32px; }
 .deputy-actions { display: flex; gap: 14px; align-items: center; }
 .card h3 { margin: 0; font-size: 15px; }
 .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: break-word; }
+.slices { list-style: none; margin: 10px 0 0; padding: 0; font-size: 13px; }
+.slices li { padding: 3px 0; }
 
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); vertical-align: middle; }
 .dot.ok { background: var(--ok); } .dot.fail { background: var(--fail); }

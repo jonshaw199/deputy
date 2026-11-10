@@ -23,6 +23,8 @@ PR_WATCH="$PROJECT_ROOT/lib/pr-watch.mjs"
 ROUTE_CLI="$PROJECT_ROOT/lib/route.mjs"
 VERIFY_CLI="$PROJECT_ROOT/lib/verify.mjs"
 RELEVANCE_CLI="$PROJECT_ROOT/lib/relevance.mjs"
+LEDGER_CLI="$PROJECT_ROOT/lib/ledger.mjs"
+CONTRACT_CLI="$PROJECT_ROOT/lib/contract.mjs"
 
 source "$PROJECT_ROOT/config.sh"
 
@@ -88,6 +90,11 @@ CIFIX_FILE="${RUNTIME_DIR}/deputy-cifix-${PROJECT_NAME}.txt"           # per-bra
 ROUTED_FILE="${RUNTIME_DIR}/deputy-routed-${PROJECT_NAME}.txt"         # self-selection verdicts (ticket:yes|no|multi|done)
 QUEUE_FILE="${RUNTIME_DIR}/deputy-queue-${PROJECT_NAME}.jsonl"         # local "do X next" requests
 PRS_FILE="${RUNTIME_DIR}/deputy-prs-${PROJECT_NAME}.json"             # open PRs + unresolved review comments
+# SHARED across every Deputy on the box (no PROJECT_NAME suffix): the one place separate repo Deputies
+# see each other. Each records its slice of a multi-repo ticket here; the contract check + dashboard read it.
+LEDGER_FILE="${DEPUTY_LEDGER_FILE:-${RUNTIME_DIR}/deputy-multi-ledger.tsv}"
+export DEPUTY_LEDGER_FILE="$LEDGER_FILE"
+CONTRACTFIX_FILE="${RUNTIME_DIR}/deputy-contractfix-${PROJECT_NAME}.txt"  # per-ticket contract-fix attempt counter (anti-thrash cap)
 CLAUDE_TIMEOUT_SECONDS=7200  # 2 hours
 
 function kill_tree() {
@@ -224,6 +231,10 @@ function watch_and_process() {
 
     # Keep standalone PRs merge-ready: rebase + resolve when one conflicts with its base.
     check_for_conflicts
+
+    # For a multi-repo ticket, verify this repo's slice agrees with its siblings on what they share
+    # (read from the shared ledger); fix only this slice if it drifted.
+    check_cross_repo_contracts
 
     # Keep open PRs from drifting too far behind their base (time-based; clean rebase, no agent).
     freshen_stale_branches
@@ -537,6 +548,99 @@ If you cannot resolve safely, run \`git rebase --abort\`, do NOT push, and clear
   done <<< "$rows"
 }
 
+# Cross-repo contract check: the general fix for "two blind runs drifted." A ticket that spans repos is
+# built as separate PRs that never saw each other, so they diverge on what they share (an API path, a
+# payload shape, casing, an enum, a column). Reading the SHARED ledger, this verifies — once per distinct
+# combination of slice head shas — that THIS repo's slice agrees with its siblings, and if not, resumes
+# ONLY this repo's slice to match (each repo's Deputy fixes its own; never edits a sibling). N-slice and
+# direction-agnostic. Capped per ticket like the CI-fix watcher so an unresolved mismatch can't thrash.
+function check_cross_repo_contracts() {
+  [ "${DEPUTY_CONTRACT_VERIFY:-true}" = "true" ] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  [ -f "$LEDGER_FILE" ] || return 0
+
+  local grouped; grouped=$(node "$LEDGER_CLI" list 2>/dev/null) || return 0
+  { [ -z "$grouped" ] || [ "$grouped" = "{}" ]; } && return 0
+  # Tickets with >=2 slices where one slice is THIS repo's.
+  local tickets; tickets=$(echo "$grouped" | jq -r --arg p "$PROJECT_NAME" 'to_entries[] | select((.value|length)>=2) | select(any(.value[]; .project==$p)) | .key' 2>/dev/null)
+  [ -z "$tickets" ] && return 0
+
+  local ticket
+  while read -r ticket; do
+    [ -z "$ticket" ] && continue
+    local slices; slices=$(echo "$grouped" | jq -c --arg t "$ticket" '.[$t] | map({project,repo,prNumber})' 2>/dev/null)
+    local my_pr; my_pr=$(echo "$grouped" | jq -r --arg t "$ticket" --arg p "$PROJECT_NAME" 'first(.[$t][] | select(.project==$p) | .prNumber) // empty' 2>/dev/null)
+    [ -z "$my_pr" ] && continue
+
+    # Fingerprint the current head sha of every slice; a new push on any side re-opens the check.
+    # Skip the whole ticket if a slice PR was CLOSED (a human took it over) — don't judge against it.
+    local combo="" closed=0 s_repo s_pr
+    while IFS=$'\t' read -r s_repo s_pr; do
+      [ -z "$s_pr" ] && continue
+      local meta; meta=$(gh pr view "$s_pr" -R "$s_repo" --json state,headRefOid 2>/dev/null)
+      [ "$(echo "$meta" | jq -r '.state // "NONE"')" = "CLOSED" ] && { closed=1; break; }
+      combo="${combo}${s_repo}#${s_pr}@$(echo "$meta" | jq -r '.headRefOid // ""');"
+    done < <(echo "$grouped" | jq -r --arg t "$ticket" '.[$t][] | "\(.repo)\t\(.prNumber)"')
+    [ "$closed" = 1 ] && continue
+
+    local combo_hash; combo_hash=$(echo "$combo" | cksum | cut -d' ' -f1)
+    local key="contract:${ticket}:${combo_hash}"
+    grep -qF "$key" "$PROCESSED_FILE" 2>/dev/null && continue
+
+    local my_branch; my_branch=$(cd "$MAIN_PROJECT_DIR" && gh pr view "$my_pr" --json headRefName --jq .headRefName 2>/dev/null)
+    [ -z "$my_branch" ] && continue
+    # Don't touch a busy/parked/blocked case or a human's worktree (same guards as the other watchers).
+    { [ -f "${RUNTIME_DIR}/deputy-item-${ticket}.lock" ] && kill -0 "$(cat "${RUNTIME_DIR}/deputy-item-${ticket}.lock" 2>/dev/null)" 2>/dev/null; } && continue
+    local alive=0 cl
+    for cl in ${RUNTIME_DIR}/deputy-item-${ticket}-cont-*.lock; do
+      [ -e "$cl" ] || continue; kill -0 "$(cat "$cl" 2>/dev/null)" 2>/dev/null && { alive=1; break; }
+    done
+    [ "$alive" = 1 ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-ask-${ticket}.txt" ] && continue
+    [ -f "${RUNTIME_DIR}/deputy-blocked-${ticket}.meta" ] && continue
+    local cwt; cwt=$(worktree_for_branch "$my_branch")
+    { [ -n "$cwt" ] && [[ "$cwt" != "${AUTOMATION_BASE_DIR}_"* ]]; } && continue
+
+    # Anti-thrash: cap fix attempts per ticket, back off past it (a real mismatch a human must settle).
+    local attempts; attempts=$(grep "^${ticket}:" "$CONTRACTFIX_FILE" 2>/dev/null | tail -1 | cut -d: -f2); attempts=${attempts:-0}
+    if [ "$attempts" -ge "${DEPUTY_CONTRACT_FIX_MAX:-2}" ]; then
+      grep -qF "contractbackoff:${ticket}" "$PROCESSED_FILE" 2>/dev/null || {
+        echo "contractbackoff:${ticket}" >> "$PROCESSED_FILE"
+        echo "[$(date)] Contract check: $ticket hit the fix cap (${attempts}); backing off — needs a human" >> "$DAEMON_LOG_FILE"
+      }
+      continue
+    fi
+
+    echo "$key" >> "$PROCESSED_FILE"
+    echo "[$(date)] Contract check: $ticket across $(echo "$slices" | jq -r 'map(.project)|join(", ")')" >> "$DAEMON_LOG_FILE"
+    local verdict; verdict=$(env -u CLAUDECODE DEPUTY_SDK_DIR="$AUTOMATION_BASE_DIR/node_modules" node "$CONTRACT_CLI" "$ticket" "$slices" 2>>"$DAEMON_LOG_FILE")
+    local agree; agree=$(echo "$verdict" | jq -r '.agree // false' 2>/dev/null)
+    local my_gaps; my_gaps=$(echo "$verdict" | jq -r --arg p "$PROJECT_NAME" '[.gaps[]? | select(.project==$p) | .gap] | join("\n- ")' 2>/dev/null)
+
+    if [ "$agree" = "true" ] || [ -z "$my_gaps" ]; then
+      grep -v "^${ticket}:" "$CONTRACTFIX_FILE" > "${CONTRACTFIX_FILE}.tmp" 2>/dev/null && mv -f "${CONTRACTFIX_FILE}.tmp" "$CONTRACTFIX_FILE"
+      echo "[$(date)] Contract check: $ticket — this repo's slice agrees" >> "$DAEMON_LOG_FILE"
+      continue
+    fi
+
+    grep -v "^${ticket}:" "$CONTRACTFIX_FILE" > "${CONTRACTFIX_FILE}.tmp" 2>/dev/null; mv -f "${CONTRACTFIX_FILE}.tmp" "$CONTRACTFIX_FILE" 2>/dev/null
+    echo "${ticket}:$((attempts + 1))" >> "$CONTRACTFIX_FILE"
+    echo "[$(date)] Contract check: $ticket — this repo's slice (#$my_pr) disagrees; fixing (attempt $((attempts + 1))/${DEPUTY_CONTRACT_FIX_MAX:-2})" >> "$DAEMON_LOG_FILE"
+
+    local sib_list; sib_list=$(echo "$slices" | jq -r --arg p "$PROJECT_NAME" '.[] | select(.project!=$p) | "- \(.project): PR #\(.prNumber) in \(.repo)"')
+    local prompt="This ticket is built as separate PRs in separate repos; they must agree on what they share across the repo boundary (API path, request/response shape, field names and casing, enum values, an event name, a column). A cross-repo review found THIS repo's slice (PR #$my_pr, branch $my_branch) out of sync.
+
+Fix ONLY this repo so it matches the agreed shape — do NOT attempt to change the other repos:
+- $my_gaps
+
+Other slices, for reference only (inspect a sibling with \`gh pr diff <number> -R <repo>\`):
+$sib_list"
+
+    local clock="${RUNTIME_DIR}/deputy-item-${ticket}-cont-contract-${combo_hash}.lock"
+    continue_ticket "$ticket" "$prompt" "contract-${combo_hash}" "$my_branch" & echo $! > "$clock"
+  done <<< "$tickets"
+}
+
 # Keep open PRs from drifting too far behind their base. Staleness is measured in TIME, not a fixed
 # commit count (20 commits is hours in a busy repo, weeks in a quiet one): a branch is stale when its
 # fork point is more than DEPUTY_FRESHEN_MAX_DAYS of base history old. A clean rebase is mechanical, so
@@ -707,6 +811,7 @@ function prune_merged_worktrees() {
     if git worktree remove --force "$path" 2>>"$DAEMON_LOG_FILE"; then
       git branch -D "$short" >/dev/null 2>&1 || true
       clear_journal "$ticket"
+      node "$LEDGER_CLI" drop "$ticket" "$PROJECT_NAME" >/dev/null 2>&1 || true  # slice is done; stop tracking it
       rm -f "$(stack_record "$ticket")" "${RUNTIME_DIR}/deputy-stopped-${ticket}.meta" \
             "${RUNTIME_DIR}/deputy-failed-${ticket}.meta" "${RUNTIME_DIR}/deputy-failed-${ticket}.txt"
       echo "[$(date)] Pruned $ticket worktree (PR $state): $path" >> "$DAEMON_LOG_FILE"
@@ -1248,6 +1353,18 @@ Work autonomously. When done, report the PR URL."
   if [ "$route_state" = "multi" ]; then
     grep -v "^${ticket_id}:" "$ROUTED_FILE" > "${ROUTED_FILE}.tmp" 2>/dev/null; mv -f "${ROUTED_FILE}.tmp" "$ROUTED_FILE" 2>/dev/null
     echo "${ticket_id}:done" >> "$ROUTED_FILE"
+    # Record this slice in the shared ledger so sibling Deputies (and the contract check + dashboard)
+    # can see it. Only completed slices land here — this is the SUCCESS path — so a ledger entry always
+    # means a real, PR-backed slice.
+    local repo_full; repo_full=$(cd "$MAIN_PROJECT_DIR" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
+    local pr_meta; pr_meta=$(cd "$MAIN_PROJECT_DIR" && gh pr list --head "$branch_name" --state open --json number,url --jq '.[0]' 2>/dev/null)
+    local pr_num pr_url head_sha
+    pr_num=$(echo "$pr_meta" | jq -r '.number // empty' 2>/dev/null)
+    pr_url=$(echo "$pr_meta" | jq -r '.url // empty' 2>/dev/null)
+    head_sha=$(cd "$MAIN_PROJECT_DIR" && git rev-parse "origin/$branch_name" 2>/dev/null)
+    if [ -n "$pr_num" ]; then
+      node "$LEDGER_CLI" record "$ticket_id" "$PROJECT_NAME" "$repo_full" "$pr_num" "$pr_url" "$head_sha" "${stack_branch:-main}" >> "$DAEMON_LOG_FILE" 2>&1
+    fi
   fi
 
   # Record a stacked PR so maintain_stacks keeps it rebased as the parent moves/merges.

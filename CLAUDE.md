@@ -12,7 +12,8 @@ verify → draft PR), with a live dashboard. User-facing docs: `README.md`. Setu
   `process_ticket` (build one ticket), and helpers (`recover_pr`, `finalize_relevance`,
   `verify_and_optimize`, continue/resume, `maintain_stacks`).
 - `lib/*.mjs` — node. Tracker adapters (`trackers/jira.mjs`, `trackers/github-issues.mjs`), the agent
-  runner (`claude-agent-runner.mjs`), and one-shot AI judges (`route.mjs`, `verify.mjs`, `relevance.mjs`).
+  runner (`claude-agent-runner.mjs`), one-shot AI judges (`route.mjs`, `verify.mjs`, `relevance.mjs`,
+  `contract.mjs`), and the shared cross-Deputy `ledger.mjs`.
 - `server/` — the dashboard (`server.mjs` + `public/`).
 - Config: `config.sh` sources `.env` (shared) then a repo's `.env.local` (per-repo override). Every knob
   is documented in `.env.example` — add new ones there.
@@ -37,6 +38,13 @@ verify → draft PR), with a live dashboard. User-facing docs: `README.md`. Setu
   **cap attempts per branch and reset on green** (see the CI-fix cap, `DEPUTY_CI_FIX_MAX`).
 - **Prove before merging.** Build on a branch, test locally (controlled repo or a real ticket), merge
   only once proven. This discipline caught an infinite loop before it shipped.
+- **Deputies coordinate ONLY through the shared ledger** (`deputy-multi-ledger.tsv` in `RUNTIME_DIR`,
+  no `PROJECT_NAME` suffix). Separate repo Deputies are separate processes with per-repo state; the
+  ledger is the one file they all read. A Deputy only ever edits ITS OWN slice — the cross-repo contract
+  check reads sibling diffs read-only (`gh pr diff -R`) and resumes only this repo's PR. Routing returns
+  `multi` but NOT which other repos, so "all slices present" is heuristic: the check fires once two or
+  more slices are recorded and re-fires per distinct combination of slice head shas (capped per ticket,
+  `DEPUTY_CONTRACT_FIX_MAX`). Only completed, PR-backed slices are recorded (it's the success path).
 - **Restart from the repo dir:** `( cd <repo> && bin/daemon restart )`. A bare restart spawns a bogus
   daemon named after the wrong directory.
 - **macOS has no `setsid`.** Persist background processes with `nohup … & disown` (both the daemon and

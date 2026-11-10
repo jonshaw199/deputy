@@ -8,6 +8,7 @@ import { readFileSync, readdirSync, existsSync, appendFileSync, writeFileSync, u
 import { join, dirname, extname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
+import { parseLedger, groupByTicket } from '../lib/ledger.mjs';
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(SERVER_DIR, '..');
@@ -203,6 +204,20 @@ export function makeServer(opts = {}) {
       });
   }
   // Open PRs + unresolved review comments the daemon published (deputy never replies).
+  // Multi-repo tickets from the shared ledger, grouped as one unit so a ticket's slices show together.
+  // A ticket with one slice is waiting on its siblings; two or more have joined up.
+  const readMultiRepo = () => {
+    let rows = [];
+    try { rows = parseLedger(readFileSync(join(TMP, 'deputy-multi-ledger.tsv'), 'utf8')); } catch { return []; }
+    return Object.entries(groupByTicket(rows))
+      .map(([ticket, slices]) => ({
+        ticket,
+        slices: slices.map((s) => ({ project: s.project, repo: s.repo, prNumber: s.prNumber, prUrl: s.prUrl })),
+        waiting: slices.length < 2,
+      }))
+      .sort((a, b) => a.ticket.localeCompare(b.ticket));
+  };
+
   const readPrs = (project) => {
     try { return JSON.parse(readFileSync(join(TMP, `deputy-prs-${project}.json`), 'utf8')); } catch { return []; }
   };
@@ -275,7 +290,7 @@ export function makeServer(opts = {}) {
       for (const d of daemons) d.cases = mergeCases(live.filter((a) => a.project === d.project), readPrs(d.project), blocked.filter((b) => b.project === d.project), failed.filter((f) => f.project === d.project), stopped.filter((s) => s.project === d.project), d.project);
       const orphans = live.filter((a) => !daemons.some((d) => d.project === a.project))
         .map((a) => ({ ...a, state: a.needsInput ? 'needs-input' : 'working', auto: isAuto(a.ticket) }));
-      return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL });
+      return json(res, 200, { daemons, orphans, repos: REPOS, siteUrl: SITE_URL, multiRepo: readMultiRepo() });
     }
     if (path === '/api/log') {
       const ticket = url.searchParams.get('ticket');

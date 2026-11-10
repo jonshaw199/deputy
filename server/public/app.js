@@ -158,6 +158,24 @@ function renderDeputies(daemons, orphans) {
   }
 }
 
+// A multi-repo ticket shown as one unit: its slices (one PR per repo) grouped together, so drift and
+// "still waiting on a sibling repo" are visible at a glance instead of scattered across deputy cards.
+function renderMultiRepo(tickets) {
+  const section = $('#multiRepoSection');
+  const wrap = $('#multiRepo');
+  if (!section || !wrap) return;
+  section.classList.toggle('hidden', tickets.length === 0);
+  wrap.innerHTML = '';
+  for (const t of tickets) {
+    const card = el('div', 'card');
+    const slices = t.slices.map((s) =>
+      `<li><span class="muted">${esc(s.project)}</span> → <a href="${esc(s.prUrl || '#')}" target="_blank">PR #${esc(s.prNumber)}</a></li>`).join('');
+    const note = t.waiting ? ' <span class="badge warn">waiting on sibling repo</span>' : '';
+    card.innerHTML = `<div class="row"><h3>${linkTickets(t.ticket)}</h3>${note}</div><ul class="slices">${slices}</ul>`;
+    wrap.append(card);
+  }
+}
+
 async function refresh() {
   try {
     const s = await api('/api/status');
@@ -183,6 +201,7 @@ async function refresh() {
       for (const r of avail) sel.append(new Option(r.split('/').pop(), r));
     }
     renderDeputies(s.daemons, s.orphans);
+    renderMultiRepo(s.multiRepo || []);
     if (logTarget) refreshLog();
     if (!deepLinked) {
       const t = new URLSearchParams(location.search).get('case');
