@@ -42,6 +42,17 @@ Plenty of tools turn an issue into a PR. Deputy's take is specific:
   at once, each fully sandboxed.
 - **Fixes its own CI** — watches its PRs; when one goes red it pulls the failures +
   annotations and pushes a fix without being asked.
+- **Verifies before it ships** — a separate skeptical pass checks the work against the
+  ticket's acceptance criteria (grounded in the real diff) and sends the builder back to
+  close any gaps before the PR is called done.
+- **Keeps PRs clean + mergeable** — drops stray setup/test drift that isn't the ticket's work
+  (a regenerated schema dump, a lockfile), rebases a branch that fell behind its base, and
+  hands a real conflict to the agent to resolve.
+- **One board, many repos** — several repos can share one tracker board; each deputy
+  self-selects whether a ticket belongs to its repo (or you pin it with a `Repos:` line), so
+  the right one(s) claim it and none grabs another repo's work. A ticket that spans repos is
+  built as one slice per repo, and each deputy keeps its slice consistent with its siblings on
+  what they share (an API path, a payload shape, field casing). See **Writing a ticket**.
 - **Surfaces review comments** — flags unresolved comments on the case (a `💬 N` chip +
   author / `file:line` / link); you say what to fix, it edits and pushes, and posts nothing
   on the PR. Finished PRs stay promptable, so you can send more work after a case is "done."
@@ -104,6 +115,34 @@ bin/daemon autostart-install        # run at login, survive a reboot
 4. **Clear it** — ✕ stops a live case (kept, **▶ re-runnable**), forgets a stopped/failed
    one, or hides a finished one.
 
+## Writing a ticket
+
+A deputy picks up a ticket when it is **labelled `ai-ready`** and **assigned to you** (your
+tracker user). That is the whole contract: write the title and description like any ticket,
+and the clearer the acceptance criteria, the better the PR (the verify pass checks the work
+against them). The label is removed on pickup so it is never grabbed twice; the status stays
+yours to move.
+
+**One board, many repos.** Several repos can share one board. Before working a ticket each
+deputy checks, grounded in its own checkout, whether the work belongs in its repo, so the
+right one(s) claim it and no deputy grabs another repo's work.
+
+**Pin the repo(s) to skip the guess.** Add one line to the ticket body:
+
+```
+Repos: my-api, my-web
+```
+
+Each listed repo claims its slice; the rest skip. One name is a normal single-repo case; two
+or more makes it a cross-repo ticket (below). Use the GitHub repo name or the checkout folder
+name. Leave the line out and the deputy decides for itself.
+
+**Cross-repo tickets.** When a ticket spans repos, each repo builds its own slice as its own
+PR. Because the slices are built independently, each deputy also checks that its slice agrees
+with its siblings on what they share (an API path, a payload shape, field casing, an enum) and
+fixes only its own side if it drifted. The dashboard groups the slices as one ticket and flags
+any slice still waiting on a sibling repo.
+
 ## Talking to deputies
 
 Open a case to chat mid-run; review comments surface for you to triage (type a fix, or
@@ -162,6 +201,10 @@ Required: tracker credentials + a GitHub token. Notable knobs:
 - `DEPUTY_TEST_SETUP` — heavier setup to make a *kept* worktree runnable (e.g. `bin/update`), run after a case finishes
 - `DEPUTY_OPEN_CMD` — custom "Open in editor" handoff; gets `$DEPUTY_WORKTREE` + `$DEPUTY_SESSION`
 - `DEPUTY_PR_LABEL` — label put on deputy PRs (also how CI auto-fix finds them)
+- `DEPUTY_VERIFY` — skeptical verify-before-ship pass (on by default; `DEPUTY_VERIFY_MAX` caps retries)
+- `DEPUTY_RELEVANCE` — at finish, drop changed files that aren't the ticket's work (on by default)
+- `DEPUTY_FRESHEN` / `DEPUTY_FRESHEN_MAX_DAYS` — rebase open PRs that fall behind their base
+- `DEPUTY_CONTRACT_VERIFY` / `DEPUTY_CONTRACT_FIX_MAX` — keep cross-repo slices consistent
 
 ## Try it with mock data
 
